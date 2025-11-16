@@ -27,8 +27,9 @@ import sqlite3
 import struct
 import hashlib
 import math
+import json
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 # ============================================================================
 # GEOMETRY GENERATION PARAMETERS
@@ -90,6 +91,51 @@ def compute_face_normal(v0: Tuple[float, float, float],
     if length > 0:
         return (nx/length, ny/length, nz/length)
     return (0, 0, 1)  # Default up normal
+
+# ============================================================================
+# GEOMETRY TRANSFORMATION UTILITIES
+# ============================================================================
+
+def rotate_vertices_z(vertices: List[Tuple[float, float, float]], angle_rad: float) -> List[Tuple[float, float, float]]:
+    """
+    Rotate vertices around Z-axis.
+
+    Args:
+        vertices: List of (x, y, z) tuples
+        angle_rad: Rotation angle in radians
+
+    Returns:
+        Rotated vertices
+    """
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+
+    rotated = []
+    for x, y, z in vertices:
+        # Rotation matrix around Z-axis:
+        # | cos  -sin  0 |   | x |
+        # | sin   cos  0 | × | y |
+        # |  0     0   1 |   | z |
+        new_x = x * cos_a - y * sin_a
+        new_y = x * sin_a + y * cos_a
+        new_z = z
+        rotated.append((new_x, new_y, new_z))
+
+    return rotated
+
+def translate_vertices(vertices: List[Tuple[float, float, float]],
+                      dx: float, dy: float, dz: float) -> List[Tuple[float, float, float]]:
+    """
+    Translate vertices by offset.
+
+    Args:
+        vertices: List of (x, y, z) tuples
+        dx, dy, dz: Translation offsets
+
+    Returns:
+        Translated vertices
+    """
+    return [(x + dx, y + dy, z + dz) for x, y, z in vertices]
 
 # ============================================================================
 # PARAMETRIC GEOMETRY GENERATORS
@@ -246,29 +292,69 @@ def generate_column_geometry(center_x: float, center_y: float, center_z: float,
     """Generate column geometry (cylinder)."""
     return generate_cylinder_geometry(diameter/2, height, COLUMN_SEGMENTS, center_x, center_y, center_z)
 
-def generate_element_geometry(ifc_class: str, center_x: float, center_y: float, center_z: float
+def generate_element_geometry(ifc_class: str, center_x: float, center_y: float, center_z: float,
+                             dimensions: Optional[Dict[str, float]] = None
                              ) -> Optional[Tuple[List[Tuple], List[Tuple], List[Tuple]]]:
     """
-    Generate geometry for an element based on IFC class.
+    Generate geometry for an element based on IFC class and actual dimensions.
+
+    Args:
+        ifc_class: IFC class name
+        center_x, center_y, center_z: Element position
+        dimensions: Dict with actual dimensions from DXF (length, width, height, diameter)
 
     Returns: (vertices, faces, normals) or None if unsupported
     """
+    dims = dimensions or {}
+
     if ifc_class == "IfcWall":
-        return generate_wall_geometry(center_x, center_y, center_z)
+        # Use actual wall length from DXF polyline, or default to 1m
+        length = dims.get('length', 1.0)
+        width = dims.get('width', DEFAULT_WALL_THICKNESS)
+        height = dims.get('height', DEFAULT_WALL_HEIGHT)
+        # Clamp to reasonable ranges (0.1m to 50m)
+        length = max(0.1, min(length, 50.0))
+        width = max(0.1, min(width, 1.0))
+        return generate_wall_geometry(center_x, center_y, center_z, width, length, height)
+
     elif ifc_class == "IfcDoor":
-        return generate_door_geometry(center_x, center_y, center_z)
+        # Use actual door dimensions from DXF block, or defaults
+        width = dims.get('width', DEFAULT_DOOR_WIDTH)
+        height = dims.get('height', DEFAULT_DOOR_HEIGHT)
+        # Clamp to reasonable ranges (0.5m to 3m)
+        width = max(0.5, min(width, 3.0))
+        height = max(1.8, min(height, 3.0))
+        return generate_door_geometry(center_x, center_y, center_z, width, height)
+
     elif ifc_class == "IfcWindow":
-        return generate_window_geometry(center_x, center_y, center_z)
+        # Use actual window dimensions from DXF block, or defaults
+        width = dims.get('width', DEFAULT_WINDOW_WIDTH)
+        height = dims.get('height', DEFAULT_WINDOW_HEIGHT)
+        # Clamp to reasonable ranges (0.3m to 5m)
+        width = max(0.3, min(width, 5.0))
+        height = max(0.3, min(height, 3.0))
+        return generate_window_geometry(center_x, center_y, center_z, width, height)
+
     elif ifc_class == "IfcColumn":
-        return generate_column_geometry(center_x, center_y, center_z)
+        # Use actual column diameter from DXF circle, or default
+        diameter = dims.get('diameter', DEFAULT_COLUMN_DIAMETER)
+        height = dims.get('height', DEFAULT_COLUMN_HEIGHT)
+        # Clamp to reasonable ranges (0.2m to 2m diameter)
+        diameter = max(0.2, min(diameter, 2.0))
+        return generate_column_geometry(center_x, center_y, center_z, diameter, height)
+
     elif ifc_class == "IfcBuildingElementProxy":
-        # Generic equipment/proxy - use box
-        return generate_box_geometry(DEFAULT_EQUIPMENT_SIZE, DEFAULT_EQUIPMENT_SIZE,
-                                    DEFAULT_EQUIPMENT_SIZE, center_x, center_y,
-                                    center_z + DEFAULT_EQUIPMENT_SIZE/2)
+        # Generic equipment/proxy - use box with measured dimensions if available
+        length = dims.get('length', DEFAULT_EQUIPMENT_SIZE)
+        width = dims.get('width', DEFAULT_EQUIPMENT_SIZE)
+        height = dims.get('height', DEFAULT_EQUIPMENT_SIZE)
+        return generate_box_geometry(length, width, height, center_x, center_y,
+                                    center_z + height/2)
     else:
-        # Other elements - simple 0.5m cube
-        return generate_box_geometry(0.5, 0.5, 0.5, center_x, center_y, center_z + 0.25)
+        # Other elements - simple 0.5m cube (or measured size)
+        size = dims.get('length', 0.5) if dims else 0.5
+        size = max(0.1, min(size, 2.0))  # Clamp
+        return generate_box_geometry(size, size, size, center_x, center_y, center_z + size/2)
 
 # ============================================================================
 # DATABASE OPERATIONS
@@ -285,10 +371,11 @@ def populate_geometry_tables(db_path: str, limit: Optional[int] = None):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Get all elements with positions
+    # Get all elements with positions, dimensions, and rotation
     print("Reading elements from database...")
     query = """
-        SELECT m.guid, m.ifc_class, m.discipline, t.center_x, t.center_y, t.center_z
+        SELECT m.guid, m.ifc_class, m.discipline, t.center_x, t.center_y, t.center_z,
+               COALESCE(t.rotation_z, 0.0) as rotation_z, m.dimensions
         FROM elements_meta m
         JOIN element_transforms t ON m.guid = t.guid
         ORDER BY m.ifc_class, m.guid
@@ -306,23 +393,44 @@ def populate_geometry_tables(db_path: str, limit: Optional[int] = None):
         'total': len(elements),
         'processed': 0,
         'skipped': 0,
-        'by_class': {}
+        'by_class': {},
+        'with_dimensions': 0,
+        'without_dimensions': 0
     }
 
     # Process each element
-    for guid, ifc_class, discipline, center_x, center_y, center_z in elements:
+    for guid, ifc_class, discipline, center_x, center_y, center_z, rotation_z, dimensions_json in elements:
         # Track by class
         if ifc_class not in stats['by_class']:
             stats['by_class'][ifc_class] = 0
 
-        # Generate geometry
-        result = generate_element_geometry(ifc_class, center_x, center_y, center_z)
+        # Parse dimensions JSON if available
+        dimensions = None
+        if dimensions_json:
+            try:
+                dimensions = json.loads(dimensions_json)
+                stats['with_dimensions'] += 1
+            except:
+                pass  # Invalid JSON, use defaults
+
+        if not dimensions:
+            stats['without_dimensions'] += 1
+
+        # Generate geometry with actual dimensions (at origin, unrotated)
+        result = generate_element_geometry(ifc_class, 0, 0, 0, dimensions)
 
         if result is None:
             stats['skipped'] += 1
             continue
 
         vertices, faces, normals = result
+
+        # Apply rotation and translation to vertices
+        if rotation_z != 0:
+            vertices = rotate_vertices_z(vertices, rotation_z)
+
+        # Translate to final position
+        vertices = translate_vertices(vertices, center_x, center_y, center_z)
 
         # Pack into binary blobs
         vertices_blob = pack_vertices(vertices)
@@ -360,6 +468,9 @@ def populate_geometry_tables(db_path: str, limit: Optional[int] = None):
     print(f"Total elements:     {stats['total']}")
     print(f"Processed:          {stats['processed']}")
     print(f"Skipped:            {stats['skipped']}")
+    print(f"\nDimension Coverage:")
+    print(f"  With dimensions:  {stats['with_dimensions']} ({stats['with_dimensions']/stats['total']*100:.1f}%)")
+    print(f"  Using defaults:   {stats['without_dimensions']} ({stats['without_dimensions']/stats['total']*100:.1f}%)")
     print("\nBy IFC Class:")
     for ifc_class, count in sorted(stats['by_class'].items(), key=lambda x: -x[1]):
         print(f"  {ifc_class:30} {count:5} elements")

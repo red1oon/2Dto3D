@@ -44,6 +44,9 @@ class DXFEntity:
     ifc_class: Optional[str] = None
     element_name: Optional[str] = None
 
+    # Phase 2: Actual dimensions from DXF geometry (in meters)
+    dimensions: Optional[Dict[str, float]] = None  # {"length": X, "width": Y, "height": Z}
+
 
 class TemplateLibrary:
     """Loads and manages templates for entity matching."""
@@ -284,6 +287,81 @@ class DXFToDatabase:
         print(f"✅ Extracted {len(self.entities)} entities")
         return self.entities
 
+    def _measure_dimensions(self, entity) -> Optional[Dict[str, float]]:
+        """
+        Measure actual dimensions from DXF entity geometry.
+
+        Returns:
+            Dict with 'length', 'width', 'height' in meters, or None if unable to measure
+        """
+        import math
+
+        entity_type = entity.dxftype()
+        dims = {}
+
+        try:
+            # POLYLINE / LWPOLYLINE - measure total length for walls
+            if entity_type in ('LWPOLYLINE', 'POLYLINE'):
+                points = list(entity.get_points())
+                if len(points) >= 2:
+                    # Calculate total polyline length
+                    total_length = 0.0
+                    for i in range(len(points) - 1):
+                        dx = points[i+1][0] - points[i][0]
+                        dy = points[i+1][1] - points[i][1]
+                        total_length += math.sqrt(dx*dx + dy*dy)
+
+                    # Convert mm to meters (DXF typically in mm)
+                    dims['length'] = total_length / 1000.0
+
+                    # For closed polylines, calculate bounding box for width
+                    if entity.is_closed:
+                        x_coords = [p[0] for p in points]
+                        y_coords = [p[1] for p in points]
+                        width = (max(y_coords) - min(y_coords)) / 1000.0
+                        dims['width'] = max(width, 0.2)  # Minimum 200mm
+
+            # LINE - measure length
+            elif entity_type == 'LINE':
+                start = entity.dxf.start
+                end = entity.dxf.end
+                dx = end.x - start.x
+                dy = end.y - start.y
+                length = math.sqrt(dx*dx + dy*dy) / 1000.0  # mm to meters
+                dims['length'] = length
+
+            # CIRCLE - diameter for columns
+            elif entity_type == 'CIRCLE':
+                radius = entity.dxf.radius
+                dims['diameter'] = (radius * 2) / 1000.0  # mm to meters
+                dims['width'] = dims['diameter']
+                dims['length'] = dims['diameter']
+
+            # INSERT (blocks) - measure bounding box for doors/windows
+            elif entity_type == 'INSERT':
+                # Try to get block definition and measure its extents
+                if hasattr(entity, 'get_attribs'):
+                    # Some blocks have size in attributes
+                    attribs = {attr.dxf.tag: attr.dxf.text for attr in entity.attribs}
+                    # Common patterns: "WIDTH=900", "SIZE=900x2100"
+                    if 'WIDTH' in attribs:
+                        dims['width'] = float(attribs['WIDTH']) / 1000.0
+                    if 'HEIGHT' in attribs:
+                        dims['height'] = float(attribs['HEIGHT']) / 1000.0
+
+                # Fallback: use block scale if available
+                if 'width' not in dims and hasattr(entity.dxf, 'xscale'):
+                    # Scale factors give approximate size (assuming unit block)
+                    dims['width'] = abs(entity.dxf.xscale)
+                    dims['length'] = abs(entity.dxf.yscale if hasattr(entity.dxf, 'yscale') else entity.dxf.xscale)
+
+        except Exception as e:
+            # Silently handle measurement failures - will fallback to defaults
+            pass
+
+        # Only return if we successfully measured something
+        return dims if dims else None
+
     def _extract_entity(self, entity) -> Optional[DXFEntity]:
         """Extract entity information."""
         entity_type = entity.dxftype()
@@ -325,12 +403,16 @@ class DXFToDatabase:
         if entity_type == 'INSERT':
             block_name = entity.dxf.name if hasattr(entity.dxf, 'name') else None
 
+        # Phase 2: Measure actual dimensions from geometry
+        dimensions = self._measure_dimensions(entity)
+
         return DXFEntity(
             entity_type=entity_type,
             layer=layer,
             block_name=block_name,
             handle=handle,
-            position=position
+            position=position,
+            dimensions=dimensions
         )
 
     def match_templates(self):
@@ -722,7 +804,8 @@ class DXFToDatabase:
                 element_description TEXT,
                 storey TEXT,
                 material_name TEXT,
-                material_rgba TEXT
+                material_rgba TEXT,
+                dimensions TEXT DEFAULT NULL
             )
         """)
 
@@ -897,18 +980,22 @@ class DXFToDatabase:
             # Generate GUID
             guid = str(uuid.uuid4())
 
+            # Serialize dimensions to JSON if available
+            dimensions_json = json.dumps(entity.dimensions) if entity.dimensions else None
+
             # Insert into elements_meta
             cursor.execute("""
                 INSERT INTO elements_meta
-                (guid, discipline, ifc_class, filepath, element_name, element_type)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (guid, discipline, ifc_class, filepath, element_name, element_type, dimensions)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 guid,
                 entity.discipline,
                 entity.ifc_class,
                 str(self.dxf_path.name),
                 entity.element_name,
-                entity.block_name or entity.entity_type
+                entity.block_name or entity.entity_type,
+                dimensions_json
             ))
 
             # Normalize coordinates: subtract offset and apply unit scale
