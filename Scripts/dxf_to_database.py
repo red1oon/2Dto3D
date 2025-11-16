@@ -723,9 +723,49 @@ class DXFToDatabase:
             )
         """)
 
+        # Create global_offset table (required by Bonsai Federation)
+        # Will be populated during coordinate normalization
+        cursor.execute("""
+            CREATE TABLE global_offset (
+                offset_x REAL NOT NULL,
+                offset_y REAL NOT NULL,
+                offset_z REAL NOT NULL,
+                extent_x REAL,
+                extent_y REAL,
+                extent_z REAL
+            )
+        """)
+
+        # Create element_geometry table (required by Bonsai Federation)
+        # Will be populated by add_geometries.py or during import
+        cursor.execute("""
+            CREATE TABLE element_geometry (
+                guid TEXT PRIMARY KEY,
+                vertices BLOB,
+                faces BLOB,
+                bbox_min_x REAL,
+                bbox_min_y REAL,
+                bbox_min_z REAL,
+                bbox_max_x REAL,
+                bbox_max_y REAL,
+                bbox_max_z REAL
+            )
+        """)
+
+        # Create virtual spatial index table (R-tree)
+        # Required by Bonsai Federation for spatial queries
+        cursor.execute("""
+            CREATE VIRTUAL TABLE elements_rtree USING rtree(
+                id,
+                min_x, max_x,
+                min_y, max_y,
+                min_z, max_z
+            )
+        """)
+
         conn.commit()
         conn.close()
-        print(f"✅ Database schema created")
+        print(f"✅ Database schema created (Bonsai Federation compatible)")
 
     def calculate_coordinate_offset(self):
         """
@@ -843,6 +883,44 @@ class DXFToDatabase:
             """, (guid, normalized_x, normalized_y, normalized_z))
 
             inserted += 1
+
+        # Populate global_offset table (required by Bonsai Federation)
+        print(f"🌐 Populating global_offset table...")
+        cursor.execute("""
+            SELECT
+                MIN(center_x), MAX(center_x),
+                MIN(center_y), MAX(center_y),
+                MIN(center_z), MAX(center_z)
+            FROM element_transforms
+        """)
+        min_x, max_x, min_y, max_y, min_z, max_z = cursor.fetchone()
+
+        # Store as negative offset (Bonsai convention: offset to ADD, not subtract)
+        cursor.execute("""
+            INSERT INTO global_offset (offset_x, offset_y, offset_z, extent_x, extent_y, extent_z)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            -min_x,  # Negative because Bonsai adds this offset
+            -min_y,
+            -min_z,
+            max_x - min_x,
+            max_y - min_y,
+            max_z - min_z
+        ))
+
+        # Populate elements_rtree spatial index (required by Bonsai Federation)
+        print(f"🗺️  Building spatial index (R-tree)...")
+        cursor.execute("""
+            INSERT INTO elements_rtree (id, min_x, max_x, min_y, max_y, min_z, max_z)
+            SELECT
+                t.id,
+                t.center_x - 0.5, t.center_x + 0.5,  -- 1m bbox placeholder
+                t.center_y - 0.5, t.center_y + 0.5,
+                t.center_z - 0.5, t.center_z + 0.5
+            FROM element_transforms t
+        """)
+
+        print(f"   Indexed {inserted} elements in R-tree")
 
         conn.commit()
         conn.close()

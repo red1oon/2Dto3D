@@ -161,13 +161,22 @@ def add_geometries_to_database(db_path):
         bbox_min_x, bbox_min_y, bbox_min_z = x-hw, y-hd, z-hh
         bbox_max_x, bbox_max_y, bbox_max_z = x+hw, y+hd, z+hh
 
-        # Insert geometry
+        # Insert geometry into base_geometries (legacy table)
         cursor.execute("""
             INSERT INTO base_geometries
             (guid, geometry_blob, bbox_min_x, bbox_min_y, bbox_min_z,
              bbox_max_x, bbox_max_y, bbox_max_z)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (guid, geometry_blob, bbox_min_x, bbox_min_y, bbox_min_z,
+              bbox_max_x, bbox_max_y, bbox_max_z))
+
+        # Also insert into element_geometry (Bonsai Federation expects this)
+        cursor.execute("""
+            INSERT OR REPLACE INTO element_geometry
+            (guid, vertices, faces, bbox_min_x, bbox_min_y, bbox_min_z,
+             bbox_max_x, bbox_max_y, bbox_max_z)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (guid, geometry_blob, geometry_blob, bbox_min_x, bbox_min_y, bbox_min_z,
               bbox_max_x, bbox_max_y, bbox_max_z))
 
         inserted += 1
