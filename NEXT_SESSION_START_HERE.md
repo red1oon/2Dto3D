@@ -149,20 +149,79 @@ For any DXF extraction, **always define spatial bounds** unless you specifically
 
 ## 🔜 NEXT STEPS
 
-### Priority 1: Test in Preview Mode ⬅️ **DO THIS NEXT**
-Test the filtered database in Bonsai Preview mode to verify geometry is visible:
+### ✅ TESTED: Preview Mode - Geometry Visible But Not Representative
 
-```bash
-cd /home/red1/Documents/bonsai
-# Copy database to appropriate location
-# Open in Bonsai and test Preview mode
+**Testing Results (Nov 17, 2025):**
+- ✅ Geometry visible at origin (0-64m, 0-42m) - CORRECT POSITIONING!
+- ✅ Building size matches validation (64.1m × 42.0m) - CORRECT SCALE!
+- ✅ Z-heights distributed 0-4.4m (intelligent assignment working)
+- ✅ No "camera too far away" issues - MAJOR PROGRESS from previous 5km building!
+- ⚠️  **Preview mode boxes NOT representative of actual building elements**
+- ⚠️  **Full Load shows same Preview mode** (database has no mesh geometry - expected)
+
+**Screenshot Evidence:** `/home/red1/Pictures/Screenshots/Screenshot from 2025-11-17 04-56-21.png`
+- Floor plan layout clearly visible in viewport
+- Elements positioned correctly (walls, doors, windows recognizable by placement)
+- But shown as simple boxes, not actual building geometry
+
+**Why Boxes Appear Instead of Building Elements:**
+
+The filtered database is **CORRECT for DXF extraction**, but only contains:
+- ✅ Element positions (where things are)
+- ✅ Element metadata (what they are - walls, doors, windows, etc.)
+- ✅ Intelligent Z-heights (vertical placement based on discipline)
+- ❌ **3D mesh geometry (actual shapes)** - 0 entries in `element_geometry` table
+
+**This is EXPECTED because:**
+1. DXF files contain 2D lines/polylines, NOT 3D meshes
+2. The extraction captures element **positions** and **metadata** only
+3. Actual 3D geometry must be **generated** from the 2D data (next step)
+
+**DATABASE STATUS:**
+```
+element_transforms:     1,037 elements ✅ (positions)
+elements_meta:          1,037 elements ✅ (metadata)
+elements_rtree:         1,037 elements ✅ (spatial index)
+element_geometry:             0 elements ⚠️  (no mesh data - TO BE GENERATED)
+base_geometries:              0 entries  ⚠️  (no mesh templates - TO BE GENERATED)
 ```
 
-**Expected Results:**
-- ✅ Geometry visible at origin (0-64m, 0-42m)
-- ✅ Building size matches validation (64.1m × 42.0m)
-- ✅ Z-heights distributed 0-4.4m (intelligent assignment)
-- ✅ No "camera too far away" issues
+### Priority 1: 2D-to-3D Mesh Generation ⬅️ **DO THIS NEXT**
+
+**Goal:** Generate actual 3D geometry from 2D positions and metadata
+
+**What Needs to be Built:**
+1. **Geometry Generator Module** - Create 3D meshes from element metadata
+   - Walls: Extrude rectangles based on position + width + height
+   - Doors: Parametric door geometry (frame + panel)
+   - Windows: Parametric window geometry (frame + glass)
+   - Columns: Cylinders or rectangular profiles based on type
+   - Equipment: Simple boxes sized by element type
+
+2. **Populate element_geometry Table** - Store generated meshes
+   - vertex_data: Mesh vertices (JSON or binary)
+   - faces_data: Face indices
+   - bbox: Bounding box for R-tree
+   - Link to element_transforms via GUID
+
+3. **Populate base_geometries Table** - Shared geometry templates
+   - Create reusable templates for common elements
+   - Reference from element_geometry to reduce database size
+
+**Expected Workflow:**
+```bash
+# 1. Generate 3D meshes from 2D database
+python3 Scripts/generate_3d_geometry.py Terminal1_MainBuilding_FILTERED.db
+
+# 2. Test Full Load in Bonsai
+# Should now show actual walls, doors, windows instead of boxes
+```
+
+**Expected Result After Geometry Generation:**
+- Full Load shows actual building elements (walls, doors, windows, columns)
+- Elements have correct proportions (wall thickness, door size, window dimensions)
+- Floor plan layout matches DXF source
+- Building represents actual Terminal 1 architecture
 
 ### Priority 2: Update Comparison Scripts
 Add dimension validation to all database comparison scripts:
