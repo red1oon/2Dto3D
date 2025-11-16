@@ -754,12 +754,13 @@ class DXFToDatabase:
 
         # Create virtual spatial index table (R-tree)
         # Required by Bonsai Federation for spatial queries
+        # NOTE: Must use camelCase column names (minX not min_x) to match Bonsai expectations
         cursor.execute("""
             CREATE VIRTUAL TABLE elements_rtree USING rtree(
                 id,
-                min_x, max_x,
-                min_y, max_y,
-                min_z, max_z
+                minX, maxX,
+                minY, maxY,
+                minZ, maxZ
             )
         """)
 
@@ -911,7 +912,7 @@ class DXFToDatabase:
         # Populate elements_rtree spatial index (required by Bonsai Federation)
         print(f"🗺️  Building spatial index (R-tree)...")
         cursor.execute("""
-            INSERT INTO elements_rtree (id, min_x, max_x, min_y, max_y, min_z, max_z)
+            INSERT INTO elements_rtree (id, minX, maxX, minY, maxY, minZ, maxZ)
             SELECT
                 t.id,
                 t.center_x - 0.5, t.center_x + 0.5,  -- 1m bbox placeholder
