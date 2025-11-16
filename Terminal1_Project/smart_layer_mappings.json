@@ -1,0 +1,25 @@
+{
+  "mappings": {
+    "wall": {"discipline": "ARC", "confidence": 1.0},
+    "WALL": {"discipline": "ARC", "confidence": 1.0},
+    "WALL1": {"discipline": "ARC", "confidence": 1.0},
+    "window": {"discipline": "ARC", "confidence": 1.0},
+    "WIN": {"discipline": "ARC", "confidence": 1.0},
+    "door": {"discipline": "ARC", "confidence": 1.0},
+    "DOOR": {"discipline": "ARC", "confidence": 1.0},
+    "DOOR-TIMBER": {"discipline": "ARC", "confidence": 1.0},
+    "code-door new": {"discipline": "ARC", "confidence": 1.0},
+    "COL": {"discipline": "STR", "confidence": 1.0},
+    "column": {"discipline": "STR", "confidence": 1.0},
+    "ROOF": {"discipline": "ARC", "confidence": 1.0},
+    "roof": {"discipline": "ARC", "confidence": 1.0},
+    "staircase": {"discipline": "ARC", "confidence": 1.0},
+    "STAIR": {"discipline": "ARC", "confidence": 1.0},
+    "FURNITURE": {"discipline": "ARC", "confidence": 1.0},
+    "z-lift-door": {"discipline": "ARC", "confidence": 1.0},
+    "z-lift-miscellaneous": {"discipline": "ARC", "confidence": 1.0},
+    "SAN": {"discipline": "SP", "confidence": 1.0},
+    "Bomba": {"discipline": "FP", "confidence": 1.0},
+    "EL": {"discipline": "ELEC", "confidence": 1.0}
+  }
+}

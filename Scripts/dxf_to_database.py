@@ -237,11 +237,22 @@ class TemplateLibrary:
 class DXFToDatabase:
     """Convert DXF file to database."""
 
-    def __init__(self, dxf_path: str, output_db: str, template_library: TemplateLibrary):
-        """Initialize converter."""
+    def __init__(self, dxf_path: str, output_db: str, template_library: TemplateLibrary, spatial_filter: Dict = None):
+        """Initialize converter.
+
+        Args:
+            dxf_path: Path to DXF file
+            output_db: Output database path
+            template_library: Template library instance
+            spatial_filter: Optional bounding box filter (in DXF units - millimeters)
+                           {'min_x': float, 'max_x': float, 'min_y': float, 'max_y': float}
+                           Use this to extract only the main building when DXF contains
+                           multiple structures or large site areas.
+        """
         self.dxf_path = Path(dxf_path)
         self.output_db = Path(output_db)
         self.template_library = template_library
+        self.spatial_filter = spatial_filter
 
         if not self.dxf_path.exists():
             raise FileNotFoundError(f"DXF file not found: {dxf_path}")
@@ -300,6 +311,14 @@ class DXFToDatabase:
                 pass  # Keep default (0, 0, 0)
         elif hasattr(entity.dxf, 'defpoint'):  # DIMENSION, LEADER
             position = (entity.dxf.defpoint.x, entity.dxf.defpoint.y, 0.0)
+
+        # Apply spatial filter if enabled (filter to main building only)
+        if self.spatial_filter:
+            x, y = position[0], position[1]
+            if not (self.spatial_filter.get('min_x', float('-inf')) <= x <= self.spatial_filter.get('max_x', float('inf')) and
+                    self.spatial_filter.get('min_y', float('-inf')) <= y <= self.spatial_filter.get('max_y', float('inf'))):
+                # Entity outside bounding box - skip it
+                return None
 
         # Extract block name for INSERT entities
         block_name = None
@@ -792,7 +811,12 @@ class DXFToDatabase:
         matched_entities = [e for e in self.entities if e.discipline and e.ifc_class]
 
         if not matched_entities:
-            return (0.0, 0.0, 0.0)
+            print("   ⚠️  No matched entities found - using all entities for offset calculation")
+            # Use ALL entities if no matches (fallback)
+            matched_entities = self.entities
+
+        if not matched_entities:
+            return (0.0, 0.0, 0.0, 1.0)  # Return 4 values including unit_scale
 
         # Get bounding box
         x_coords = [e.position[0] for e in matched_entities]
@@ -819,11 +843,17 @@ class DXFToDatabase:
         # Check DXF units and apply appropriate scaling
         # DXF INSUNITS=4 means millimeters, so we need mm→m conversion
         unit_scale = 1.0
-        if abs(max_x - min_x) > 10000 or abs(max_y - min_y) > 10000:
+        coord_range_x = abs(max_x - min_x)
+        coord_range_y = abs(max_y - min_y)
+
+        if coord_range_x > 10000 or coord_range_y > 10000:
             print(f"   ⚠️  Large coordinates detected")
             print(f"   Range: X=[{min_x:.0f}, {max_x:.0f}], Y=[{min_y:.0f}, {max_y:.0f}]")
             unit_scale = 0.001  # Convert mm → m (DXF units are millimeters)
             print(f"   Applying mm→m conversion (scale: {unit_scale})")
+        else:
+            print(f"   Coordinate range: X={coord_range_x:.2f}, Y={coord_range_y:.2f}")
+            print(f"   No unit conversion needed (already in meters)")
 
         print(f"   Coordinate offset: X={offset_x:.2f}, Y={offset_y:.2f}, Z={offset_z:.2f}")
         print(f"   Unit scale: {unit_scale}")
@@ -899,36 +929,46 @@ class DXFToDatabase:
 
         # Populate global_offset table (required by Bonsai Federation)
         print(f"🌐 Populating global_offset table...")
-        cursor.execute("""
-            SELECT
-                MIN(center_x), MAX(center_x),
-                MIN(center_y), MAX(center_y),
-                MIN(center_z), MAX(center_z)
-            FROM element_transforms
-        """)
-        min_x, max_x, min_y, max_y, min_z, max_z = cursor.fetchone()
 
-        # Store as negative offset (Bonsai convention: offset to ADD, not subtract)
-        cursor.execute("""
-            INSERT INTO global_offset (offset_x, offset_y, offset_z, extent_x, extent_y, extent_z)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            -min_x,  # Negative because Bonsai adds this offset
-            -min_y,
-            -min_z,
-            max_x - min_x,
-            max_y - min_y,
-            max_z - min_z
-        ))
+        # Handle case when no entities were matched (0 rows in element_transforms)
+        if inserted == 0:
+            print(f"   ⚠️  No entities to process - using default offset (0, 0, 0)")
+            cursor.execute("""
+                INSERT INTO global_offset (offset_x, offset_y, offset_z, extent_x, extent_y, extent_z)
+                VALUES (0, 0, 0, 0, 0, 0)
+            """)
+        else:
+            cursor.execute("""
+                SELECT
+                    MIN(center_x), MAX(center_x),
+                    MIN(center_y), MAX(center_y),
+                    MIN(center_z), MAX(center_z)
+                FROM element_transforms
+            """)
+            min_x, max_x, min_y, max_y, min_z, max_z = cursor.fetchone()
+
+            # Store as negative offset (Bonsai convention: offset to ADD, not subtract)
+            cursor.execute("""
+                INSERT INTO global_offset (offset_x, offset_y, offset_z, extent_x, extent_y, extent_z)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                -min_x,  # Negative because Bonsai adds this offset
+                -min_y,
+                -min_z,
+                max_x - min_x,
+                max_y - min_y,
+                max_z - min_z
+            ))
 
         # Populate elements_rtree spatial index (required by Bonsai Federation)
         # NOTE: R-tree stores coordinates in METERS (same as element_transforms)
         #       Creating 1m placeholder bounding boxes around each center point
+        #       Uses ROWID from element_transforms as the rtree id
         print(f"🗺️  Building spatial index (R-tree)...")
         cursor.execute("""
             INSERT INTO elements_rtree (id, minX, maxX, minY, maxY, minZ, maxZ)
             SELECT
-                t.id,
+                t.rowid,
                 t.center_x - 0.5, t.center_x + 0.5,
                 t.center_y - 0.5, t.center_y + 0.5,
                 t.center_z - 0.5, t.center_z + 0.5
