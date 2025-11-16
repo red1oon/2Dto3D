@@ -736,20 +736,29 @@ class DXFToDatabase:
             )
         """)
 
-        # Create element_geometry table (required by Bonsai Federation)
-        # Will be populated by add_geometries.py or during import
+        # Create base_geometries table (stores unique geometry blobs)
         cursor.execute("""
-            CREATE TABLE element_geometry (
-                guid TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS base_geometries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guid TEXT UNIQUE,
+                geometry_hash TEXT,
                 vertices BLOB,
                 faces BLOB,
-                bbox_min_x REAL,
-                bbox_min_y REAL,
-                bbox_min_z REAL,
-                bbox_max_x REAL,
-                bbox_max_y REAL,
-                bbox_max_z REAL
+                normals BLOB
             )
+        """)
+
+        # Create element_geometry VIEW (required by Bonsai Federation)
+        # This is a view, not a table, matching the IFC extraction pattern
+        cursor.execute("""
+            CREATE VIEW IF NOT EXISTS element_geometry AS
+            SELECT
+                guid,
+                geometry_hash,
+                vertices,
+                faces,
+                normals
+            FROM base_geometries
         """)
 
         # Create virtual spatial index table (R-tree)
@@ -911,14 +920,16 @@ class DXFToDatabase:
         ))
 
         # Populate elements_rtree spatial index (required by Bonsai Federation)
-        print(f"🗺️  Building spatial index (R-tree)...")
+        # NOTE: R-tree stores coordinates in MILLIMETERS (multiply by 1000)
+        #       This matches the IFC extraction script behavior
+        print(f"🗺️  Building spatial index (R-tree in millimeters)...")
         cursor.execute("""
             INSERT INTO elements_rtree (id, minX, maxX, minY, maxY, minZ, maxZ)
             SELECT
                 t.id,
-                t.center_x - 0.5, t.center_x + 0.5,  -- 1m bbox placeholder
-                t.center_y - 0.5, t.center_y + 0.5,
-                t.center_z - 0.5, t.center_z + 0.5
+                (t.center_x - 0.5) * 1000, (t.center_x + 0.5) * 1000,
+                (t.center_y - 0.5) * 1000, (t.center_y + 0.5) * 1000,
+                (t.center_z - 0.5) * 1000, (t.center_z + 0.5) * 1000
             FROM element_transforms t
         """)
 

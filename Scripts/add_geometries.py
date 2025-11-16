@@ -108,29 +108,26 @@ def add_geometries_to_database(db_path):
     conn = sqlite3.connect(str(db_path))
     cursor = conn.cursor()
 
-    # Check if base_geometries table exists
+    # base_geometries table should already exist from dxf_to_database.py
+    # Check and create if missing
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='base_geometries'")
-    if cursor.fetchone():
-        print("⚠️  base_geometries table already exists, dropping...")
-        cursor.execute("DROP TABLE base_geometries")
-
-    # Create base_geometries table
-    print("💾 Creating base_geometries table...")
-    cursor.execute("""
-        CREATE TABLE base_geometries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guid TEXT UNIQUE NOT NULL,
-            geometry_blob BLOB,
-            bbox_min_x REAL,
-            bbox_min_y REAL,
-            bbox_min_z REAL,
-            bbox_max_x REAL,
-            bbox_max_y REAL,
-            bbox_max_z REAL
-        )
-    """)
-
-    cursor.execute("CREATE INDEX idx_geometries_guid ON base_geometries(guid)")
+    if not cursor.fetchone():
+        print("💾 Creating base_geometries table...")
+        cursor.execute("""
+            CREATE TABLE base_geometries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guid TEXT UNIQUE,
+                geometry_hash TEXT,
+                vertices BLOB,
+                faces BLOB,
+                normals BLOB
+            )
+        """)
+        cursor.execute("CREATE INDEX idx_geometries_guid ON base_geometries(guid)")
+    else:
+        # Clear existing geometries for regeneration
+        print("⚠️  Clearing existing geometries...")
+        cursor.execute("DELETE FROM base_geometries")
 
     # Get all elements with positions and IFC classes
     print("🎯 Fetching element positions...")
@@ -164,23 +161,13 @@ def add_geometries_to_database(db_path):
         bbox_min_x, bbox_min_y, bbox_min_z = x-hw, y-hd, z-hh
         bbox_max_x, bbox_max_y, bbox_max_z = x+hw, y+hd, z+hh
 
-        # Insert geometry into base_geometries (legacy table)
+        # Insert geometry into base_geometries
+        # element_geometry is a VIEW of this table, so only insert here
         cursor.execute("""
             INSERT INTO base_geometries
-            (guid, geometry_blob, bbox_min_x, bbox_min_y, bbox_min_z,
-             bbox_max_x, bbox_max_y, bbox_max_z)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (guid, geometry_blob, bbox_min_x, bbox_min_y, bbox_min_z,
-              bbox_max_x, bbox_max_y, bbox_max_z))
-
-        # Also insert into element_geometry (Bonsai Federation expects this)
-        cursor.execute("""
-            INSERT OR REPLACE INTO element_geometry
-            (guid, vertices, faces, bbox_min_x, bbox_min_y, bbox_min_z,
-             bbox_max_x, bbox_max_y, bbox_max_z)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (guid, geometry_blob, geometry_blob, bbox_min_x, bbox_min_y, bbox_min_z,
-              bbox_max_x, bbox_max_y, bbox_max_z))
+            (guid, geometry_hash, vertices, faces, normals)
+            VALUES (?, ?, ?, ?, ?)
+        """, (guid, f"hash_{guid[:8]}", geometry_blob, geometry_blob, None))
 
         inserted += 1
 
