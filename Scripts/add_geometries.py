@@ -75,24 +75,27 @@ def create_box_mesh(x, y, z, width=1.0, height=1.0, depth=1.0):
 def get_element_size(ifc_class, entity_count_in_layer=1):
     """Estimate reasonable size for element based on IFC class."""
     # Size heuristics (width, height, depth in meters)
-    # Realistic building element sizes for visualization
+    # Scaled 77× for DXF building (5.4km) vs typical IFC building (70m)
+    # This makes elements proportionally visible in Preview mode
+    SCALE = 77.0  # DXF building is 77× larger than typical IFC
+
     sizes = {
-        'IfcWall': (0.2, 3.0, 0.15),          # 200mm thick, 3m tall, 150mm wide segment
-        'IfcWindow': (1.2, 1.5, 0.1),         # 1.2m wide, 1.5m tall, 100mm frame
-        'IfcDoor': (1.0, 2.1, 0.05),          # 1m wide, 2.1m tall, 50mm thick
-        'IfcColumn': (0.4, 3.0, 0.4),         # 400mm × 400mm, 3m tall
-        'IfcBeam': (0.3, 0.5, 2.0),           # 300mm wide, 500mm deep, 2m span
-        'IfcSlab': (3.0, 3.0, 0.2),           # 3m × 3m area, 200mm thick
-        'IfcFurniture': (0.6, 0.6, 0.8),      # Chair/desk size
-        'IfcPipeSegment': (0.1, 0.1, 1.0),    # 100mm diameter, 1m segment
-        'IfcDuctSegment': (0.4, 0.3, 1.0),    # 400×300mm duct, 1m segment
-        'IfcLightFixture': (0.3, 0.3, 0.1),   # 300mm × 300mm fixture
-        'IfcFireSuppressionTerminal': (0.1, 0.1, 0.1),  # Sprinkler head
-        'IfcAirTerminal': (0.4, 0.4, 0.2),    # Diffuser
-        'IfcBuildingElementProxy': (0.5, 0.5, 0.5),  # Generic 500mm cube
+        'IfcWall': (0.2 * SCALE, 3.0 * SCALE, 0.15 * SCALE),          # ~15m thick, 231m tall
+        'IfcWindow': (1.2 * SCALE, 1.5 * SCALE, 0.1 * SCALE),         # ~92m wide, 115m tall
+        'IfcDoor': (1.0 * SCALE, 2.1 * SCALE, 0.05 * SCALE),          # ~77m wide, 162m tall
+        'IfcColumn': (0.4 * SCALE, 3.0 * SCALE, 0.4 * SCALE),         # ~31m × 31m, 231m tall
+        'IfcBeam': (0.3 * SCALE, 0.5 * SCALE, 2.0 * SCALE),           # ~23m wide, 154m span
+        'IfcSlab': (3.0 * SCALE, 3.0 * SCALE, 0.2 * SCALE),           # ~231m × 231m, 15m thick
+        'IfcFurniture': (0.6 * SCALE, 0.6 * SCALE, 0.8 * SCALE),      # ~46m furniture
+        'IfcPipeSegment': (0.1 * SCALE, 0.1 * SCALE, 1.0 * SCALE),    # ~8m diameter, 77m segment
+        'IfcDuctSegment': (0.4 * SCALE, 0.3 * SCALE, 1.0 * SCALE),    # ~31×23m duct, 77m segment
+        'IfcLightFixture': (0.3 * SCALE, 0.3 * SCALE, 0.1 * SCALE),   # ~23m × 23m fixture
+        'IfcFireSuppressionTerminal': (0.1 * SCALE, 0.1 * SCALE, 0.1 * SCALE),  # ~8m sprinkler
+        'IfcAirTerminal': (0.4 * SCALE, 0.4 * SCALE, 0.2 * SCALE),    # ~31m diffuser
+        'IfcBuildingElementProxy': (0.5 * SCALE, 0.5 * SCALE, 0.5 * SCALE),  # ~38m cube
     }
 
-    return sizes.get(ifc_class, (0.5, 0.5, 0.5))  # Default 500mm cube
+    return sizes.get(ifc_class, (0.5 * SCALE, 0.5 * SCALE, 0.5 * SCALE))  # Default ~38m cube
 
 
 def add_geometries_to_database(db_path):

@@ -712,14 +712,16 @@ class DXFToDatabase:
         cursor.execute("CREATE INDEX idx_elements_meta_discipline ON elements_meta(discipline)")
         cursor.execute("CREATE INDEX idx_elements_meta_ifc_class ON elements_meta(ifc_class)")
 
-        # Create element_transforms table (simplified)
+        # Create element_transforms table (MUST match working IFC database schema!)
+        # PRIMARY KEY: guid (NOT id!)
         cursor.execute("""
             CREATE TABLE element_transforms (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guid TEXT NOT NULL,
-                center_x REAL,
-                center_y REAL,
-                center_z REAL
+                guid TEXT PRIMARY KEY,
+                center_x REAL NOT NULL,
+                center_y REAL NOT NULL,
+                center_z REAL NOT NULL,
+                transform_source TEXT DEFAULT 'dxf_conversion',
+                FOREIGN KEY (guid) REFERENCES elements_meta(guid)
             )
         """)
 
