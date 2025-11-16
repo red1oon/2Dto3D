@@ -176,6 +176,32 @@ def add_geometries_to_database(db_path):
 
     conn.commit()
 
+    # Update R-tree with actual geometry bounding boxes
+    print("\n🗺️  Updating R-tree spatial index with actual geometry sizes...")
+    cursor.execute("DELETE FROM elements_rtree")
+
+    for guid, ifc_class, x, y, z in elements:
+        # Get element ID
+        cursor.execute("SELECT id FROM elements_meta WHERE guid = ?", (guid,))
+        elem_id = cursor.fetchone()[0]
+
+        # Get appropriate size for this element type
+        width, height, depth = get_element_size(ifc_class)
+
+        # Calculate bounding box (same as geometry)
+        hw, hh, hd = width/2, height/2, depth/2
+        bbox_min_x, bbox_min_y, bbox_min_z = x-hw, y-hd, z-hh
+        bbox_max_x, bbox_max_y, bbox_max_z = x+hw, y+hd, z+hh
+
+        # Update R-tree with actual bbox (in meters, not placeholder 1m)
+        cursor.execute("""
+            INSERT INTO elements_rtree (id, minX, maxX, minY, maxY, minZ, maxZ)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (elem_id, bbox_min_x, bbox_max_x, bbox_min_y, bbox_max_y, bbox_min_z, bbox_max_z))
+
+    conn.commit()
+    print(f"   ✅ Updated {len(elements)} R-tree entries with actual geometry sizes")
+
     # Add spatial_structure table (simplified for now)
     print("\n🏗️  Creating spatial_structure table...")
     cursor.execute("DROP TABLE IF EXISTS spatial_structure")
