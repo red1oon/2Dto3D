@@ -75,22 +75,25 @@ def create_box_mesh(x, y, z, width=1.0, height=1.0, depth=1.0):
 def get_element_size(ifc_class, entity_count_in_layer=1):
     """Estimate reasonable size for element based on IFC class."""
     # Size heuristics (width, height, depth in meters)
+    # NOTE: Scaled 10× larger for 2D→3D converted models (DXF has no real geometry)
+    #       Original sizes were too small (0.1-3.0m) for kilometer-scale buildings
     sizes = {
-        'IfcWall': (0.2, 3.0, 1.0),
-        'IfcWindow': (1.2, 1.5, 0.1),
-        'IfcDoor': (1.0, 2.1, 0.1),
-        'IfcColumn': (0.4, 3.0, 0.4),
-        'IfcBeam': (0.3, 0.5, 2.0),
-        'IfcSlab': (3.0, 3.0, 0.2),
-        'IfcFurniture': (0.6, 0.6, 0.8),
-        'IfcPipeSegment': (0.1, 0.1, 1.0),
-        'IfcDuctSegment': (0.4, 0.3, 1.0),
-        'IfcLightFixture': (0.3, 0.3, 0.1),
-        'IfcFireSuppressionTerminal': (0.1, 0.1, 0.1),  # Sprinkler
-        'IfcAirTerminal': (0.4, 0.4, 0.2),  # Diffuser
+        'IfcWall': (2.0, 30.0, 10.0),
+        'IfcWindow': (12.0, 15.0, 1.0),
+        'IfcDoor': (10.0, 21.0, 1.0),
+        'IfcColumn': (4.0, 30.0, 4.0),
+        'IfcBeam': (3.0, 5.0, 20.0),
+        'IfcSlab': (30.0, 30.0, 2.0),
+        'IfcFurniture': (6.0, 6.0, 8.0),
+        'IfcPipeSegment': (1.0, 1.0, 10.0),
+        'IfcDuctSegment': (4.0, 3.0, 10.0),
+        'IfcLightFixture': (3.0, 3.0, 1.0),
+        'IfcFireSuppressionTerminal': (1.0, 1.0, 1.0),  # Sprinkler
+        'IfcAirTerminal': (4.0, 4.0, 2.0),  # Diffuser
+        'IfcBuildingElementProxy': (5.0, 5.0, 5.0),  # Generic elements
     }
 
-    return sizes.get(ifc_class, (0.5, 0.5, 0.5))  # Default 50cm cube
+    return sizes.get(ifc_class, (5.0, 5.0, 5.0))  # Default 5m cube (10× larger)
 
 
 def add_geometries_to_database(db_path):
