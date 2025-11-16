@@ -75,25 +75,24 @@ def create_box_mesh(x, y, z, width=1.0, height=1.0, depth=1.0):
 def get_element_size(ifc_class, entity_count_in_layer=1):
     """Estimate reasonable size for element based on IFC class."""
     # Size heuristics (width, height, depth in meters)
-    # Scaled 100× larger for 2D→3D DXF conversion at kilometer scale
-    # DXF coordinates are in mm, resulting in 5km×3km building after conversion
+    # Realistic building element sizes for visualization
     sizes = {
-        'IfcWall': (20.0, 300.0, 100.0),
-        'IfcWindow': (120.0, 150.0, 10.0),
-        'IfcDoor': (100.0, 210.0, 10.0),
-        'IfcColumn': (40.0, 300.0, 40.0),
-        'IfcBeam': (30.0, 50.0, 200.0),
-        'IfcSlab': (300.0, 300.0, 20.0),
-        'IfcFurniture': (60.0, 60.0, 80.0),
-        'IfcPipeSegment': (10.0, 10.0, 100.0),
-        'IfcDuctSegment': (40.0, 30.0, 100.0),
-        'IfcLightFixture': (30.0, 30.0, 10.0),
-        'IfcFireSuppressionTerminal': (10.0, 10.0, 10.0),  # Sprinkler
-        'IfcAirTerminal': (40.0, 40.0, 20.0),  # Diffuser
-        'IfcBuildingElementProxy': (50.0, 50.0, 50.0),  # Generic elements
+        'IfcWall': (0.2, 3.0, 0.15),          # 200mm thick, 3m tall, 150mm wide segment
+        'IfcWindow': (1.2, 1.5, 0.1),         # 1.2m wide, 1.5m tall, 100mm frame
+        'IfcDoor': (1.0, 2.1, 0.05),          # 1m wide, 2.1m tall, 50mm thick
+        'IfcColumn': (0.4, 3.0, 0.4),         # 400mm × 400mm, 3m tall
+        'IfcBeam': (0.3, 0.5, 2.0),           # 300mm wide, 500mm deep, 2m span
+        'IfcSlab': (3.0, 3.0, 0.2),           # 3m × 3m area, 200mm thick
+        'IfcFurniture': (0.6, 0.6, 0.8),      # Chair/desk size
+        'IfcPipeSegment': (0.1, 0.1, 1.0),    # 100mm diameter, 1m segment
+        'IfcDuctSegment': (0.4, 0.3, 1.0),    # 400×300mm duct, 1m segment
+        'IfcLightFixture': (0.3, 0.3, 0.1),   # 300mm × 300mm fixture
+        'IfcFireSuppressionTerminal': (0.1, 0.1, 0.1),  # Sprinkler head
+        'IfcAirTerminal': (0.4, 0.4, 0.2),    # Diffuser
+        'IfcBuildingElementProxy': (0.5, 0.5, 0.5),  # Generic 500mm cube
     }
 
-    return sizes.get(ifc_class, (50.0, 50.0, 50.0))  # Default 50m cube
+    return sizes.get(ifc_class, (0.5, 0.5, 0.5))  # Default 500mm cube
 
 
 def add_geometries_to_database(db_path):
