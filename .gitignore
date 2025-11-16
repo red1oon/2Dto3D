@@ -43,3 +43,7 @@ SourceFiles/*.dwg
 SourceFiles/*.zip
 SourceFiles/*.rar
 SourceFiles/TERMINAL1DXF/**/*.dxf
+
+# Large binary files (>100MB)
+*.blend
+*.db
