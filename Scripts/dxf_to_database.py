@@ -58,18 +58,19 @@ class TemplateLibrary:
         self.layer_mapping = {}  # layer name → discipline
         self.layer_mappings_path = layer_mappings_path
 
-        # Discipline code mappings (standardized short codes)
-        # Changed 2025-11-17: Use standard short codes instead of full names
+        # Map DXF discipline abbreviations to template discipline names
+        # NOTE: Templates use full names during extraction
+        # We'll convert to short codes (ARC, FP, STR, ELEC) later in database
         self.discipline_map = {
-            'FP': 'FP',           # Fire Protection (was: Fire_Protection)
-            'ARC': 'ARC',         # Architecture (was: Seating)
-            'ACMV': 'ACMV',       # HVAC
-            'SP': 'SP',           # Sanitary/Plumbing (was: Plumbing)
-            'CW': 'CW',           # Chilled Water (was: Chilled_Water)
-            'LPG': 'LPG',         # LPG
-            'ELEC': 'ELEC',       # Electrical (was: Electrical)
-            'STR': 'STR',         # Structure (was: Structure)
-            'REB': 'REB'          # Reinforcement (was: Reinforcement)
+            'FP': 'Fire_Protection',
+            'ARC': 'Seating',  # Templates use 'Seating' for architecture
+            'ACMV': 'HVAC',
+            'SP': 'Plumbing',
+            'CW': 'Chilled_Water',
+            'LPG': 'LPG',
+            'ELEC': 'Electrical',
+            'STR': 'Structure',
+            'REB': 'Reinforcement'
         }
 
         if not self.template_db_path.exists():
@@ -263,19 +264,20 @@ class DXFToDatabase:
 
         self.entities = []
         self.statistics = defaultdict(int)
+        self.doc = None  # Store DXF document for dimension extraction
 
     def parse_dxf(self) -> List[DXFEntity]:
         """Parse DXF file and extract entities."""
         print(f"📂 Opening DXF: {self.dxf_path.name}")
 
         try:
-            doc = ezdxf.readfile(str(self.dxf_path))
-            print(f"✅ Opened DXF (version: {doc.dxfversion})")
+            self.doc = ezdxf.readfile(str(self.dxf_path))
+            print(f"✅ Opened DXF (version: {self.doc.dxfversion})")
         except Exception as e:
             print(f"❌ Error reading DXF: {e}")
             return []
 
-        modelspace = doc.modelspace()
+        modelspace = self.doc.modelspace()
         print(f"📊 Extracting entities...")
 
         for entity in modelspace:
@@ -350,8 +352,69 @@ class DXFToDatabase:
                     if 'HEIGHT' in attribs:
                         dims['height'] = float(attribs['HEIGHT']) / 1000.0
 
+                # Try to measure actual block definition geometry
+                if not dims and self.doc and hasattr(entity.dxf, 'name'):
+                    try:
+                        block_name = entity.dxf.name
+                        if block_name in self.doc.blocks:
+                            block_layout = self.doc.blocks.get(block_name)
+
+                            # Calculate bounding box of all entities in block
+                            min_x = min_y = float('inf')
+                            max_x = max_y = float('-inf')
+
+                            for block_entity in block_layout:
+                                # Skip ATTDEF entities (attribute definitions)
+                                if block_entity.dxftype() == 'ATTDEF':
+                                    continue
+
+                                # Get bounding box for this entity
+                                if hasattr(block_entity, 'get_points'):
+                                    for point in block_entity.get_points():
+                                        min_x = min(min_x, point[0])
+                                        max_x = max(max_x, point[0])
+                                        min_y = min(min_y, point[1])
+                                        max_y = max(max_y, point[1])
+                                elif hasattr(block_entity.dxf, 'start') and hasattr(block_entity.dxf, 'end'):
+                                    # LINE
+                                    for point in [block_entity.dxf.start, block_entity.dxf.end]:
+                                        min_x = min(min_x, point[0])
+                                        max_x = max(max_x, point[0])
+                                        min_y = min(min_y, point[1])
+                                        max_y = max(max_y, point[1])
+                                elif hasattr(block_entity.dxf, 'center'):
+                                    # CIRCLE, ARC
+                                    radius = getattr(block_entity.dxf, 'radius', 0)
+                                    center = block_entity.dxf.center
+                                    min_x = min(min_x, center[0] - radius)
+                                    max_x = max(max_x, center[0] + radius)
+                                    min_y = min(min_y, center[1] - radius)
+                                    max_y = max(max_y, center[1] + radius)
+
+                            # If we found valid bounds, calculate dimensions
+                            if min_x != float('inf'):
+                                # Block definition size in mm
+                                block_width = max_x - min_x
+                                block_depth = max_y - min_y
+
+                                # Apply INSERT scaling
+                                xscale = abs(getattr(entity.dxf, 'xscale', 1.0))
+                                yscale = abs(getattr(entity.dxf, 'yscale', 1.0))
+
+                                # Final dimensions in meters
+                                dims['width'] = (block_width * xscale) / 1000.0
+                                dims['length'] = (block_depth * yscale) / 1000.0
+
+                                # Minimum size sanity check (at least 50mm)
+                                if dims['width'] < 0.05:
+                                    dims['width'] = 0.05
+                                if dims['length'] < 0.05:
+                                    dims['length'] = 0.05
+                    except Exception as e:
+                        pass  # Continue to fallback
+
                 # Fallback: use block scale if available
-                if 'width' not in dims and hasattr(entity.dxf, 'xscale'):
+                if not dims and hasattr(entity.dxf, 'xscale'):
                     # Scale factors give approximate size (assuming unit block)
                     dims['width'] = abs(entity.dxf.xscale)
                     dims['length'] = abs(entity.dxf.yscale if hasattr(entity.dxf, 'yscale') else entity.dxf.xscale)

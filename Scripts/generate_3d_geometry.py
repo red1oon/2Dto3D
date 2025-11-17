@@ -346,8 +346,61 @@ def generate_column_geometry(center_x: float, center_y: float, center_z: float,
     """Generate column geometry (cylinder)."""
     return generate_cylinder_geometry(diameter/2, height, COLUMN_SEGMENTS, center_x, center_y, center_z)
 
+def add_dimension_variety(ifc_class: str, guid: str, dimensions: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+    """
+    Add intelligent dimension variety based on GUID hash to create visual diversity.
+
+    For elements without complete dimensions, use GUID to deterministically assign
+    varied sizes, creating better visual diversity in Preview mode.
+
+    Args:
+        ifc_class: IFC class name
+        guid: Element GUID (used as hash seed for deterministic variety)
+        dimensions: Existing dimensions (may be incomplete)
+
+    Returns:
+        Complete dimensions dict with variety added
+    """
+    dims = dimensions.copy() if dimensions else {}
+
+    # Use GUID hash to get deterministic variety (0.0 to 1.0)
+    hash_val = hash(guid) % 1000 / 1000.0
+
+    # Add dimension variety based on IFC class
+    if ifc_class == "IfcDoor":
+        # Door size variety: 0.7m to 1.2m width, 2.0m to 2.4m height
+        # Override if missing or default value (0 or close to defaults)
+        if 'width' not in dims or dims['width'] <= 0 or abs(dims['width'] - DEFAULT_DOOR_WIDTH) < 0.1:
+            dims['width'] = 0.7 + (hash_val * 0.5)  # 0.7-1.2m
+        if 'height' not in dims or dims['height'] <= 0 or abs(dims['height'] - DEFAULT_DOOR_HEIGHT) < 0.1:
+            hash_h = hash(guid + "_h") % 1000 / 1000.0
+            dims['height'] = 2.0 + (hash_h * 0.4)  # 2.0-2.4m
+
+    elif ifc_class == "IfcWindow":
+        # Window size variety: 0.6m to 1.8m width, 1.0m to 1.8m height
+        if 'width' not in dims or dims['width'] <= 0 or abs(dims['width'] - DEFAULT_WINDOW_WIDTH) < 0.1:
+            dims['width'] = 0.6 + (hash_val * 1.2)  # 0.6-1.8m
+        if 'height' not in dims or dims['height'] <= 0 or abs(dims['height'] - DEFAULT_WINDOW_HEIGHT) < 0.1:
+            hash_h = hash(guid + "_h") % 1000 / 1000.0
+            dims['height'] = 1.0 + (hash_h * 0.8)  # 1.0-1.8m
+
+    elif ifc_class == "IfcBuildingElementProxy":
+        # Equipment size variety: 0.3m to 2.0m per dimension
+        # Override default 1.0m values (±0.1 tolerance)
+        if 'length' not in dims or dims['length'] <= 0 or abs(dims['length'] - 1.0) < 0.15:
+            dims['length'] = 0.3 + (hash_val * 1.7)  # 0.3-2.0m
+        if 'width' not in dims or dims['width'] <= 0 or abs(dims['width'] - 1.0) < 0.15:
+            hash_w = hash(guid + "_w") % 1000 / 1000.0
+            dims['width'] = 0.3 + (hash_w * 1.7)  # 0.3-2.0m
+        if 'height' not in dims or dims['height'] <= 0 or abs(dims['height'] - 1.0) < 0.15:
+            hash_h = hash(guid + "_h") % 1000 / 1000.0
+            dims['height'] = 0.3 + (hash_h * 1.7)  # 0.3-2.0m
+
+    return dims
+
 def generate_element_geometry(ifc_class: str, center_x: float, center_y: float, center_z: float,
-                             dimensions: Optional[Dict[str, float]] = None
+                             dimensions: Optional[Dict[str, float]] = None,
+                             guid: str = ""
                              ) -> Optional[Tuple[List[Tuple], List[Tuple], List[Tuple]]]:
     """
     Generate geometry for an element based on IFC class and actual dimensions.
@@ -356,10 +409,12 @@ def generate_element_geometry(ifc_class: str, center_x: float, center_y: float, 
         ifc_class: IFC class name
         center_x, center_y, center_z: Element position
         dimensions: Dict with actual dimensions from DXF (length, width, height, diameter)
+        guid: Element GUID (for deterministic dimension variety)
 
     Returns: (vertices, faces, normals) or None if unsupported
     """
-    dims = dimensions or {}
+    # Add intelligent dimension variety for visual diversity
+    dims = add_dimension_variety(ifc_class, guid, dimensions)
 
     if ifc_class == "IfcWall":
         # Use actual wall length from DXF polyline, or default to 1m
@@ -398,7 +453,7 @@ def generate_element_geometry(ifc_class: str, center_x: float, center_y: float, 
         return generate_column_geometry(center_x, center_y, center_z, diameter, height)
 
     elif ifc_class == "IfcBuildingElementProxy":
-        # Generic equipment/proxy - use box with measured dimensions if available
+        # Generic equipment/proxy - use box with varied dimensions for visual diversity
         length = dims.get('length', DEFAULT_EQUIPMENT_SIZE)
         width = dims.get('width', DEFAULT_EQUIPMENT_SIZE)
         height = dims.get('height', DEFAULT_EQUIPMENT_SIZE)
@@ -478,7 +533,8 @@ def populate_geometry_tables(db_path: str, limit: Optional[int] = None):
             stats['without_dimensions'] += 1
 
         # Generate geometry with actual dimensions (at origin, unrotated)
-        result = generate_element_geometry(ifc_class, 0, 0, 0, dimensions)
+        # Pass GUID for deterministic dimension variety
+        result = generate_element_geometry(ifc_class, 0, 0, 0, dimensions, guid)
 
         if result is None:
             stats['skipped'] += 1
@@ -501,10 +557,10 @@ def populate_geometry_tables(db_path: str, limit: Optional[int] = None):
         # Compute geometry hash
         geom_hash = compute_hash(vertices_blob, faces_blob)
 
-        # Insert into base_geometries (or ignore if duplicate hash)
+        # Insert/update base_geometries (replace if already exists)
         try:
             cursor.execute("""
-                INSERT OR IGNORE INTO base_geometries (guid, geometry_hash, vertices, faces, normals)
+                INSERT OR REPLACE INTO base_geometries (guid, geometry_hash, vertices, faces, normals)
                 VALUES (?, ?, ?, ?, ?)
             """, (guid, geom_hash, vertices_blob, faces_blob, normals_blob))
 
