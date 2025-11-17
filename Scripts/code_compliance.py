@@ -131,7 +131,16 @@ class PlacementGenerator:
     2. Works for ANY element type (sprinklers, lights, HVAC, etc.)
     3. Creates 2D grid distribution (not just lines)
     4. Respects wall clearances and coverage requirements
+    5. Can write directly to database (integration with dxf_to_database.py workflow)
     """
+
+    # Map element types to IFC classes
+    ELEMENT_IFC_MAP = {
+        'sprinkler': 'IfcBuildingElementProxy',
+        'light_fixture': 'IfcBuildingElementProxy',
+        'hvac_diffuser': 'IfcBuildingElementProxy',
+        'smoke_detector': 'IfcBuildingElementProxy',
+    }
 
     @staticmethod
     def generate_grid_placement(
@@ -203,6 +212,109 @@ class PlacementGenerator:
         print(f"{'='*80}\n")
 
         return placements
+
+    @staticmethod
+    def insert_generated_elements_to_db(
+        db_path: str,
+        placements: List[Tuple[float, float, float]],
+        element_type: str,
+        discipline: str,
+        element_name: Optional[str] = None
+    ) -> int:
+        """
+        Insert generated placements directly into database.
+
+        Integrates with dxf_to_database.py schema:
+        - elements_meta: metadata for each element
+        - element_transforms: positions and dimensions
+        - elements_rtree: spatial index
+
+        Args:
+            db_path: Path to database file
+            placements: List of (x, y, z) positions from generate_grid_placement()
+            element_type: 'sprinkler', 'light_fixture', 'hvac_diffuser', etc.
+            discipline: 'FP', 'ELEC', 'HVAC'
+            element_name: Optional custom name (defaults to element_type)
+
+        Returns:
+            Number of elements inserted
+        """
+        import sqlite3
+        import uuid
+        import json
+
+        # Get IFC class for element type
+        ifc_class = PlacementGenerator.ELEMENT_IFC_MAP.get(element_type, 'IfcBuildingElementProxy')
+        if not element_name:
+            element_name = element_type
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        inserted = 0
+        print(f"\n{'='*80}")
+        print(f"INSERTING GENERATED ELEMENTS TO DATABASE")
+        print(f"{'='*80}")
+        print(f"Database:       {db_path}")
+        print(f"Element Type:   {element_type}")
+        print(f"Discipline:     {discipline}")
+        print(f"IFC Class:      {ifc_class}")
+        print(f"Count:          {len(placements)}")
+
+        for x, y, z in placements:
+            guid = str(uuid.uuid4())
+
+            # Default dimensions (can be refined later)
+            dimensions = {"width": 0.2, "length": 0.2, "height": 0.3}
+            dimensions_json = json.dumps(dimensions)
+
+            # Insert into elements_meta
+            cursor.execute("""
+                INSERT INTO elements_meta
+                (guid, discipline, ifc_class, filepath, element_name, element_type, inferred_shape_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                guid,
+                discipline,
+                ifc_class,
+                f'Generated_{element_type}',
+                element_name,
+                element_type,
+                element_type  # inferred_shape_type for routing
+            ))
+
+            # Insert position
+            cursor.execute("""
+                INSERT INTO element_transforms
+                (guid, center_x, center_y, center_z, length, rotation_z)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (guid, x, y, z, 0.2, 0.0))  # Default 0.2m length, 0 rotation
+
+            # Get rowid for rtree
+            cursor.execute("SELECT rowid FROM element_transforms WHERE guid = ?", (guid,))
+            rowid = cursor.fetchone()[0]
+
+            # Insert into spatial index (elements_rtree)
+            bbox_size = 0.1  # 0.1m bounding box around point
+            cursor.execute("""
+                INSERT INTO elements_rtree (id, minX, maxX, minY, maxY, minZ, maxZ)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                rowid,
+                x - bbox_size, x + bbox_size,
+                y - bbox_size, y + bbox_size,
+                z - bbox_size, z + bbox_size
+            ))
+
+            inserted += 1
+
+        conn.commit()
+        conn.close()
+
+        print(f"✅ Inserted {inserted} elements into database")
+        print(f"{'='*80}\n")
+
+        return inserted
 
 
 class CodeComplianceValidator:
