@@ -59,6 +59,11 @@ echo ""
 echo "Step 3: Adding geometry to generated devices..."
 python3 add_device_geometry.py
 
+# Step 4: Add material assignments (CRITICAL - makes elements visible!)
+echo ""
+echo "Step 4: Adding material assignments (colors)..."
+python3 Scripts/add_material_assignments.py Terminal1_MainBuilding_FILTERED.db
+
 echo ""
 echo "================================================================================"
 echo "LAYER 2 COMPLETE"
