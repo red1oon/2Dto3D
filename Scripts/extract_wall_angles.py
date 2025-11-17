@@ -65,12 +65,12 @@ def get_coordinate_offset_from_db() -> Tuple[float, float, float, float]:
         print("⚠️  No coordinate metadata found, using defaults")
         return (0.0, 0.0, 0.0, 0.001)
 
-def extract_wall_angles_from_dxf() -> Dict[Tuple[float, float], float]:
+def extract_wall_angles_from_dxf() -> Dict[Tuple[float, float], Tuple[float, float]]:
     """
-    Extract wall positions and rotation angles from DXF.
+    Extract wall positions, rotation angles, and lengths from DXF.
 
     Returns:
-        Dict mapping (center_x, center_y) → rotation_angle_radians
+        Dict mapping (center_x, center_y) → (rotation_angle_radians, length_meters)
     """
     print("\n" + "="*70)
     print("EXTRACTING WALL ANGLES FROM DXF")
@@ -132,13 +132,25 @@ def extract_wall_angles_from_dxf() -> Dict[Tuple[float, float], float]:
                 center_x = (insert_point.x - offset_x) * unit_scale
                 center_y = (insert_point.y - offset_y) * unit_scale
 
-                wall_angles[(center_x, center_y)] = rotation_rad
+                # For INSERT blocks, length is unknown (use 1m default)
+                wall_angles[(center_x, center_y)] = (rotation_rad, 1.0)
                 processed_entities += 1
 
         # Process line/polyline points
         if len(points) >= 2:
             # Calculate angle from first segment
             angle = calculate_angle_from_points(points[0], points[1])
+
+            # Calculate total length (sum of all segments)
+            total_length = 0.0
+            for i in range(len(points) - 1):
+                dx = points[i+1][0] - points[i][0]
+                dy = points[i+1][1] - points[i][1]
+                segment_length = math.sqrt(dx**2 + dy**2)
+                total_length += segment_length
+
+            # Convert length to meters (apply unit_scale)
+            length_m = total_length * unit_scale
 
             # Calculate center point (apply same transformation as DB extraction)
             raw_center_x = sum(p[0] for p in points) / len(points)
@@ -148,14 +160,16 @@ def extract_wall_angles_from_dxf() -> Dict[Tuple[float, float], float]:
             center_x = (raw_center_x - offset_x) * unit_scale
             center_y = (raw_center_y - offset_y) * unit_scale
 
-            wall_angles[(center_x, center_y)] = angle
+            wall_angles[(center_x, center_y)] = (angle, length_m)
             processed_entities += 1
 
     print(f"✅ Processed {processed_entities:,} wall entities")
     print(f"✅ Extracted {len(wall_angles):,} unique wall positions with angles\n")
 
-    # Show angle distribution
-    angle_deg_list = [math.degrees(a) % 360 for a in wall_angles.values()]
+    # Show angle and length distribution
+    angle_deg_list = [math.degrees(a) % 360 for (a, _) in wall_angles.values()]
+    length_list = [length for (_, length) in wall_angles.values()]
+
     if angle_deg_list:
         print("Angle distribution (degrees):")
         print(f"  Min: {min(angle_deg_list):.1f}°")
@@ -174,51 +188,67 @@ def extract_wall_angles_from_dxf() -> Dict[Tuple[float, float], float]:
                 bar = "█" * (count // 5 or 1)
                 print(f"    {deg:3d}°: {count:4d} walls {bar}")
 
+    if length_list:
+        print(f"\nLength distribution (meters):")
+        print(f"  Min: {min(length_list):.2f}m")
+        print(f"  Max: {max(length_list):.2f}m")
+        print(f"  Mean: {sum(length_list)/len(length_list):.2f}m")
+        print(f"  Total: {sum(length_list):.2f}m")
+
     return wall_angles
 
 def find_closest_wall(wall_angles: Dict, target_x: float, target_y: float,
-                     max_distance: float = 2.0) -> Optional[float]:
+                     max_distance: float = 2.0) -> Optional[Tuple[float, float]]:
     """
-    Find the closest wall angle to a given position.
+    Find the closest wall angle and length to a given position.
 
     Args:
-        wall_angles: Dict of (x, y) → angle
+        wall_angles: Dict of (x, y) → (angle, length)
         target_x, target_y: Target position (meters)
         max_distance: Maximum search radius (meters)
 
     Returns:
-        Rotation angle in radians, or None if no match found
+        (rotation_angle_radians, length_meters), or None if no match found
     """
     best_distance = max_distance
-    best_angle = None
+    best_data = None
 
-    for (wx, wy), angle in wall_angles.items():
+    for (wx, wy), (angle, length) in wall_angles.items():
         distance = math.sqrt((wx - target_x)**2 + (wy - target_y)**2)
         if distance < best_distance:
             best_distance = distance
-            best_angle = angle
+            best_data = (angle, length)
 
-    return best_angle
+    return best_data
 
 def update_database_with_angles(wall_angles: Dict):
     """
-    Update element_transforms table with rotation_z column.
+    Update element_transforms table with rotation_z and length columns.
     Match walls by proximity to DXF wall positions.
     """
     print("="*70)
-    print("UPDATING DATABASE WITH ROTATION ANGLES")
+    print("UPDATING DATABASE WITH ROTATION ANGLES AND LENGTHS")
     print("="*70 + "\n")
 
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
 
-    # Step 1: Add rotation_z column if it doesn't exist
+    # Step 1: Add rotation_z and length columns if they don't exist
     try:
         cursor.execute("ALTER TABLE element_transforms ADD COLUMN rotation_z REAL DEFAULT 0.0")
         print("✅ Added rotation_z column to element_transforms")
     except sqlite3.OperationalError as e:
         if "duplicate column" in str(e).lower():
             print("✅ rotation_z column already exists")
+        else:
+            raise
+
+    try:
+        cursor.execute("ALTER TABLE element_transforms ADD COLUMN length REAL DEFAULT 1.0")
+        print("✅ Added length column to element_transforms")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            print("✅ length column already exists")
         else:
             raise
 
@@ -234,23 +264,24 @@ def update_database_with_angles(wall_angles: Dict):
     elements = cursor.fetchall()
     print(f"Found {len(elements):,} wall/door/window elements to update\n")
 
-    # Step 3: Match elements to DXF walls and update rotation
+    # Step 3: Match elements to DXF walls and update rotation & length
     matched = 0
     unmatched = 0
 
     for guid, cx, cy, ifc_class in elements:
-        # Find closest wall angle
-        angle = find_closest_wall(wall_angles, cx, cy, max_distance=2.0)
+        # Find closest wall data (angle and length)
+        wall_data = find_closest_wall(wall_angles, cx, cy, max_distance=2.0)
 
-        if angle is not None:
+        if wall_data is not None:
+            angle, length = wall_data
             cursor.execute("""
                 UPDATE element_transforms
-                SET rotation_z = ?
+                SET rotation_z = ?, length = ?
                 WHERE guid = ?
-            """, (angle, guid))
+            """, (angle, length, guid))
             matched += 1
         else:
-            # Keep default 0.0 rotation
+            # Keep defaults (0.0 rotation, 1.0m length)
             unmatched += 1
 
     conn.commit()
@@ -263,14 +294,24 @@ def update_database_with_angles(wall_angles: Dict):
     """)
     unique_angles = cursor.fetchone()[0]
 
+    # Get length statistics
+    cursor.execute("""
+        SELECT MIN(length), MAX(length), AVG(length)
+        FROM element_transforms
+        WHERE length IS NOT NULL AND length > 0
+    """)
+    length_stats = cursor.fetchone()
+    min_len, max_len, avg_len = length_stats if length_stats else (0, 0, 0)
+
     print(f"✅ Matched: {matched:,} elements")
-    print(f"⚠️  Unmatched: {unmatched:,} elements (will use 0° default)")
+    print(f"⚠️  Unmatched: {unmatched:,} elements (will use defaults: 0° rotation, 1.0m length)")
     print(f"✅ Unique rotation angles in database: {unique_angles}")
+    print(f"✅ Length range: {min_len:.2f}m - {max_len:.2f}m (avg: {avg_len:.2f}m)")
 
     # Show sample of updated data
-    print("\nSample of updated rotations:")
+    print("\nSample of updated walls (with rotation & length):")
     cursor.execute("""
-        SELECT m.ifc_class, t.center_x, t.center_y, t.rotation_z
+        SELECT m.ifc_class, t.center_x, t.center_y, t.rotation_z, t.length
         FROM elements_meta m
         JOIN element_transforms t ON m.guid = t.guid
         WHERE m.ifc_class = 'IfcWall'
@@ -279,11 +320,11 @@ def update_database_with_angles(wall_angles: Dict):
         LIMIT 10
     """)
 
-    print(f"{'IFC Class':<20} {'Position (X, Y)':<25} {'Rotation'}")
-    print("-"*70)
-    for ifc_class, cx, cy, rot_z in cursor.fetchall():
+    print(f"{'IFC Class':<20} {'Position (X, Y)':<25} {'Rotation':<12} {'Length'}")
+    print("-"*75)
+    for ifc_class, cx, cy, rot_z, length in cursor.fetchall():
         rot_deg = math.degrees(rot_z) % 360
-        print(f"{ifc_class:<20} ({cx:7.2f}, {cy:7.2f})  {rot_deg:6.1f}°")
+        print(f"{ifc_class:<20} ({cx:7.2f}, {cy:7.2f})  {rot_deg:6.1f}°  {length:7.2f}m")
 
     conn.close()
     print("\n" + "="*70)
