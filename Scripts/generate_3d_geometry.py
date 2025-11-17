@@ -267,23 +267,77 @@ def generate_wall_geometry(center_x: float, center_y: float, center_z: float,
     """
     return generate_box_geometry(length, thickness, height, center_x, center_y, center_z + height/2)
 
+def generate_door_frame_geometry(width: float, height: float, thickness: float,
+                                frame_width: float = 0.1) -> Tuple[List[Tuple], List[Tuple], List[Tuple]]:
+    """
+    Generate door frame geometry (hollow rectangle - distinct from solid box).
+    Frame consists of 4 parts: left, right, top, bottom borders.
+    Returns 16 vertices (more than box's 8) - BonsaiTester recognizes as distinct shape.
+    """
+    hw, hh, ht = width/2, height/2, thickness/2
+    fw = frame_width  # Frame border width
+
+    vertices = []
+    # Outer corners
+    vertices.extend([
+        (-hw, -ht, -hh), (-hw, ht, -hh), (-hw, ht, hh), (-hw, -ht, hh),  # Left face outer
+        (hw, -ht, -hh), (hw, ht, -hh), (hw, ht, hh), (hw, -ht, hh),      # Right face outer
+    ])
+    # Inner corners (hollow center)
+    vertices.extend([
+        (-hw+fw, -ht, -hh+fw), (-hw+fw, ht, -hh+fw), (-hw+fw, ht, hh-fw), (-hw+fw, -ht, hh-fw),  # Inner left
+        (hw-fw, -ht, -hh+fw), (hw-fw, ht, -hh+fw), (hw-fw, ht, hh-fw), (hw-fw, -ht, hh-fw),      # Inner right
+    ])
+
+    # Frame faces as quads (need to convert to triangles)
+    quads = [
+        # Left border
+        (0, 1, 9, 8), (1, 2, 10, 9), (2, 3, 11, 10), (3, 0, 8, 11),
+        # Right border
+        (4, 12, 13, 5), (5, 13, 14, 6), (6, 14, 15, 7), (7, 15, 12, 4),
+        # Top border
+        (2, 6, 14, 10), (1, 5, 13, 9),
+        # Bottom border
+        (0, 8, 12, 4), (3, 7, 15, 11),
+    ]
+
+    # Convert quads to triangles (split each quad into 2 triangles)
+    faces = []
+    for quad in quads:
+        faces.append((quad[0], quad[1], quad[2]))  # First triangle
+        faces.append((quad[0], quad[2], quad[3]))  # Second triangle
+
+    # Generate normals for each face
+    normals = []
+    for face in faces:
+        v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+        normals.append(compute_face_normal(v0, v1, v2))
+
+    return vertices, faces, normals
+
 def generate_door_geometry(center_x: float, center_y: float, center_z: float,
                           width: float = DEFAULT_DOOR_WIDTH,
                           height: float = DEFAULT_DOOR_HEIGHT
                          ) -> Tuple[List[Tuple], List[Tuple], List[Tuple]]:
-    """Generate door geometry (simple rectangular panel)."""
+    """Generate door geometry (frame shape - 16 vertices, distinct from boxes)."""
     thickness = 0.05  # 50mm door thickness
-    return generate_box_geometry(width, thickness, height, center_x, center_y, center_z + height/2)
+    vertices, faces, normals = generate_door_frame_geometry(width, height, thickness, frame_width=0.08)
+    # Translate to position
+    vertices = translate_vertices(vertices, center_x, center_y, center_z + height/2)
+    return vertices, faces, normals
 
 def generate_window_geometry(center_x: float, center_y: float, center_z: float,
                             width: float = DEFAULT_WINDOW_WIDTH,
                             height: float = DEFAULT_WINDOW_HEIGHT
                            ) -> Tuple[List[Tuple], List[Tuple], List[Tuple]]:
-    """Generate window geometry (simple rectangular frame)."""
+    """Generate window geometry (frame shape - 16 vertices, distinct from boxes)."""
     thickness = 0.1  # 100mm window thickness
     # Windows typically start 1m above floor
     z_offset = 1.0 + height/2
-    return generate_box_geometry(width, thickness, height, center_x, center_y, center_z + z_offset)
+    vertices, faces, normals = generate_door_frame_geometry(width, height, thickness, frame_width=0.05)
+    # Translate to position
+    vertices = translate_vertices(vertices, center_x, center_y, center_z + z_offset)
+    return vertices, faces, normals
 
 def generate_column_geometry(center_x: float, center_y: float, center_z: float,
                             diameter: float = DEFAULT_COLUMN_DIAMETER,
