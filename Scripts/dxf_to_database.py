@@ -543,6 +543,19 @@ class DXFToDatabase:
 
         return has_valid_elevations
 
+    def load_building_config(self):
+        """Load building_config.json for config-driven parameters."""
+        import json
+        from pathlib import Path
+
+        config_path = Path(__file__).parent.parent / 'building_config.json'
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        else:
+            print("⚠️  Warning: building_config.json not found, using hardcoded defaults")
+            return None
+
     def assign_intelligent_z_heights(self, building_type: str = "airport", use_elevation_data: bool = False):
         """
         Assign intelligent Z-heights to all entities based on discipline and IFC class.
@@ -555,6 +568,9 @@ class DXFToDatabase:
             use_elevation_data: If True, preserve existing Z-coordinates from elevation views
         """
         print(f"🎯 Assigning intelligent Z-heights for building type: {building_type}...")
+
+        # Load config for config-driven ceiling heights (NEW!)
+        config = self.load_building_config()
 
         # Auto-detect elevation views if not specified
         if not use_elevation_data:
@@ -587,17 +603,38 @@ class DXFToDatabase:
         else:
             print(f"   Strategy: Rule-based assignment (plan view only)")
 
+        # Get ceiling height from config (CONFIG-DRIVEN!)
+        if config:
+            # Get target floor from POC config
+            target_floor = config.get('poc_config', {}).get('target_floor', '1F')
 
-        # Ceiling heights by building type (in meters)
-        ceiling_heights = {
-            "airport": 4.5,      # High ceilings for terminals
-            "office": 3.5,       # Standard office
-            "hospital": 3.8,     # Higher for medical equipment
-            "industrial": 5.0,   # Very high for warehouse
-            "residential": 2.7,  # Standard residential
-        }
+            # Find floor level in config
+            floor_levels = config.get('floor_levels', [])
+            target_floor_config = None
+            for floor in floor_levels:
+                if floor.get('level_id') == target_floor:
+                    target_floor_config = floor
+                    break
 
-        ceiling = ceiling_heights.get(building_type, 3.5)
+            if target_floor_config:
+                ceiling = target_floor_config.get('mep_ceiling_height', 4.0)
+                floor_elevation = target_floor_config.get('elevation', 0.0)
+                print(f"✅ Using config-driven ceiling height: {ceiling}m (floor {target_floor} @ {floor_elevation}m)")
+            else:
+                # Fallback to building info
+                ceiling = config.get('building_info', {}).get('typical_floor_height', 3.5)
+                print(f"⚠️  Target floor not found in config, using typical_floor_height: {ceiling}m")
+        else:
+            # Fallback to hardcoded values (LEGACY)
+            ceiling_heights = {
+                "airport": 4.5,      # High ceilings for terminals
+                "office": 3.5,       # Standard office
+                "hospital": 3.8,     # Higher for medical equipment
+                "industrial": 5.0,   # Very high for warehouse
+                "residential": 2.7,  # Standard residential
+            }
+            ceiling = ceiling_heights.get(building_type, 3.5)
+            print(f"⚠️  Using hardcoded ceiling height: {ceiling}m (no config found)")
 
         # Discipline-based Z-height rules
         # Format: (discipline, ifc_class) → Z-height offset

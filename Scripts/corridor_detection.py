@@ -106,12 +106,12 @@ class CorridorDetector:
         for row in cursor.fetchall():
             guid, cx, cy, cz, length, rotation_z = row
 
-            # Convert rotation to angle (assuming rotation_z is in radians)
+            # Convert rotation to angle (rotation_z is in radians from database)
             angle = math.degrees(rotation_z) % 360
 
             # Calculate wall endpoints based on center, length, and rotation
             half_len = length / 2
-            rad = math.radians(rotation_z)
+            rad = rotation_z  # FIXED: rotation_z is ALREADY in radians, don't convert again!
 
             start_x = cx - half_len * math.cos(rad)
             start_y = cy - half_len * math.sin(rad)
@@ -161,7 +161,7 @@ class CorridorDetector:
 
         return parallel_groups
 
-    def detect_corridor_pairs(self, parallel_walls: List[Wall], max_width: float = 8.0, min_width: float = 1.5) -> List[Tuple[Wall, Wall, float]]:
+    def detect_corridor_pairs(self, parallel_walls: List[Wall], max_width: float = 8.0, min_width: float = 1.5, debug: bool = True) -> List[Tuple[Wall, Wall, float]]:
         """
         Detect pairs of parallel walls that form corridors.
 
@@ -169,23 +169,38 @@ class CorridorDetector:
             parallel_walls: List of parallel walls
             max_width: Maximum corridor width (meters)
             min_width: Minimum corridor width (meters)
+            debug: Print debug info
 
         Returns:
             List of (wall1, wall2, width) tuples representing corridor pairs
         """
         corridor_pairs = []
+        checked_pairs = 0
+        width_rejected = 0
+        overlap_rejected = 0
 
         # Check each pair of parallel walls
         for i, wall1 in enumerate(parallel_walls):
             for wall2 in parallel_walls[i+1:]:
-                # Calculate perpendicular distance between parallel walls
-                # Use midpoints for distance calculation
+                checked_pairs += 1
+
+                # Calculate PERPENDICULAR distance between parallel walls (FIXED!)
+                # Old code used Euclidean distance of midpoints (WRONG)
+                # New code calculates perpendicular distance based on wall angle
                 mid1 = wall1.midpoint()
                 mid2 = wall2.midpoint()
 
-                # Calculate perpendicular distance
-                # For simplicity, use Euclidean distance (more accurate calculation would project)
-                distance = math.sqrt((mid2[0] - mid1[0])**2 + (mid2[1] - mid1[1])**2)
+                # Calculate perpendicular distance correctly based on wall orientation
+                # For horizontal walls (angle ~0° or ~180°): distance is difference in Y
+                # For vertical walls (angle ~90° or ~270°): distance is difference in X
+                angle_normalized = wall1.angle % 180  # 0-180 range
+
+                if abs(angle_normalized - 90) < 45:  # Vertical wall (45-135°)
+                    # Perpendicular distance = difference in X coordinates
+                    distance = abs(mid2[0] - mid1[0])
+                else:  # Horizontal wall (0-45° or 135-180°)
+                    # Perpendicular distance = difference in Y coordinates
+                    distance = abs(mid2[1] - mid1[1])
 
                 # Check if walls are within corridor width range
                 if min_width <= distance <= max_width:
@@ -193,16 +208,29 @@ class CorridorDetector:
                     # Project walls onto their common axis to check overlap
                     if self._check_wall_overlap(wall1, wall2):
                         corridor_pairs.append((wall1, wall2, distance))
+                    else:
+                        overlap_rejected += 1
+                        if debug and overlap_rejected <= 5:  # Show first 5 rejections
+                            print(f"  DEBUG: Rejected (no overlap): walls at {mid1}, {mid2}, distance={distance:.2f}m")
+                else:
+                    width_rejected += 1
+
+        if debug:
+            print(f"\nDEBUG: Corridor pair detection:")
+            print(f"  Checked {checked_pairs} wall pairs")
+            print(f"  Rejected {width_rejected} (width out of range {min_width}-{max_width}m)")
+            print(f"  Rejected {overlap_rejected} (insufficient overlap)")
+            print(f"  Accepted {len(corridor_pairs)} corridor pairs")
 
         return corridor_pairs
 
-    def _check_wall_overlap(self, wall1: Wall, wall2: Wall, min_overlap: float = 2.0) -> bool:
+    def _check_wall_overlap(self, wall1: Wall, wall2: Wall, min_overlap: float = 0.5) -> bool:
         """
         Check if two parallel walls have significant overlap.
 
         Args:
             wall1, wall2: Walls to check
-            min_overlap: Minimum overlap length required (meters)
+            min_overlap: Minimum overlap length required (meters) - REDUCED from 2.0m to 0.5m
 
         Returns:
             True if walls overlap sufficiently
@@ -210,17 +238,20 @@ class CorridorDetector:
         # For simplicity, check if walls are aligned in the perpendicular direction
         # More accurate implementation would project walls onto common axis
 
-        # Check X-axis overlap for vertical corridors
-        if abs(wall1.angle - 90) < 45 or abs(wall1.angle - 270) < 45:
-            # Vertical walls - check Y overlap
+        # Normalize angle to match distance calculation (CONSISTENT!)
+        angle_normalized = wall1.angle % 180  # 0-180 range
+
+        # Check overlap based on wall orientation (MUST match distance calculation!)
+        if abs(angle_normalized - 90) < 45:  # Vertical wall (45-135°)
+            # Vertical walls - check Y overlap (along the wall direction)
             wall1_min_y = min(wall1.start_y, wall1.end_y)
             wall1_max_y = max(wall1.start_y, wall1.end_y)
             wall2_min_y = min(wall2.start_y, wall2.end_y)
             wall2_max_y = max(wall2.start_y, wall2.end_y)
 
             overlap = min(wall1_max_y, wall2_max_y) - max(wall1_min_y, wall2_min_y)
-        else:
-            # Horizontal walls - check X overlap
+        else:  # Horizontal wall (0-45° or 135-180°)
+            # Horizontal walls - check X overlap (along the wall direction)
             wall1_min_x = min(wall1.start_x, wall1.end_x)
             wall1_max_x = max(wall1.start_x, wall1.end_x)
             wall2_min_x = min(wall2.start_x, wall2.end_x)
