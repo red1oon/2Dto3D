@@ -371,11 +371,12 @@ def populate_geometry_tables(db_path: str, limit: Optional[int] = None):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Get all elements with positions, dimensions, and rotation
+    # Get all elements with positions, dimensions, rotation, and extracted length
     print("Reading elements from database...")
     query = """
         SELECT m.guid, m.ifc_class, m.discipline, t.center_x, t.center_y, t.center_z,
-               COALESCE(t.rotation_z, 0.0) as rotation_z, m.dimensions
+               COALESCE(t.rotation_z, 0.0) as rotation_z, m.dimensions,
+               COALESCE(t.length, 1.0) as length
         FROM elements_meta m
         JOIN element_transforms t ON m.guid = t.guid
         ORDER BY m.ifc_class, m.guid
@@ -399,19 +400,25 @@ def populate_geometry_tables(db_path: str, limit: Optional[int] = None):
     }
 
     # Process each element
-    for guid, ifc_class, discipline, center_x, center_y, center_z, rotation_z, dimensions_json in elements:
+    for guid, ifc_class, discipline, center_x, center_y, center_z, rotation_z, dimensions_json, length_from_dxf in elements:
         # Track by class
         if ifc_class not in stats['by_class']:
             stats['by_class'][ifc_class] = 0
 
         # Parse dimensions JSON if available
-        dimensions = None
+        dimensions = {}
         if dimensions_json:
             try:
                 dimensions = json.loads(dimensions_json)
                 stats['with_dimensions'] += 1
             except:
                 pass  # Invalid JSON, use defaults
+
+        # Merge extracted length from DXF (overrides JSON if present)
+        if length_from_dxf and length_from_dxf > 0:
+            dimensions['length'] = length_from_dxf
+            if not dimensions_json:  # Count as "with dimensions" if we have DXF length
+                stats['with_dimensions'] += 1
 
         if not dimensions:
             stats['without_dimensions'] += 1
