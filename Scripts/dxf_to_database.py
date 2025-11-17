@@ -28,6 +28,22 @@ except ImportError:
     print("Install: pip install ezdxf")
     sys.exit(1)
 
+# Logging configuration
+import logging
+from datetime import datetime
+
+def setup_logging(verbose=True):
+    """Setup comprehensive logging for DXF extraction process."""
+    log_level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    return logging.getLogger(__name__)
+
+logger = setup_logging(verbose=True)
+
 
 @dataclass
 class DXFEntity:
@@ -268,18 +284,26 @@ class DXFToDatabase:
 
     def parse_dxf(self) -> List[DXFEntity]:
         """Parse DXF file and extract entities."""
-        print(f"📂 Opening DXF: {self.dxf_path.name}")
+        logger.info(f"="*80)
+        logger.info(f"PARSING DXF FILE")
+        logger.info(f"="*80)
+        logger.info(f"File: {self.dxf_path}")
+        logger.info(f"Size: {self.dxf_path.stat().st_size / 1024:.1f} KB")
 
         try:
             self.doc = ezdxf.readfile(str(self.dxf_path))
-            print(f"✅ Opened DXF (version: {self.doc.dxfversion})")
+            logger.info(f"✅ Opened DXF successfully")
+            logger.info(f"   Version: {self.doc.dxfversion}")
+            logger.info(f"   Units: {self.doc.units}")
         except Exception as e:
-            print(f"❌ Error reading DXF: {e}")
+            logger.error(f"❌ Error reading DXF: {e}")
             return []
 
         modelspace = self.doc.modelspace()
-        print(f"📊 Extracting entities...")
+        total_entities = len(modelspace)
+        logger.info(f"📊 Extracting {total_entities} entities from modelspace...")
 
+        processed = 0
         for entity in modelspace:
             dxf_entity = self._extract_entity(entity)
             if dxf_entity:
@@ -287,7 +311,18 @@ class DXFToDatabase:
                 self.statistics[dxf_entity.entity_type] += 1
                 self.statistics[f"layer:{dxf_entity.layer}"] += 1
 
-        print(f"✅ Extracted {len(self.entities)} entities")
+            processed += 1
+            if processed % 500 == 0:
+                logger.debug(f"  Progress: {processed}/{total_entities} entities processed")
+
+        logger.info(f"✅ Extracted {len(self.entities)} valid entities ({len(self.entities)/total_entities*100:.1f}% of total)")
+
+        # Log entity type breakdown
+        logger.info(f"\n📊 Entity Type Breakdown:")
+        entity_types = {k: v for k, v in self.statistics.items() if not k.startswith('layer:')}
+        for entity_type, count in sorted(entity_types.items(), key=lambda x: x[1], reverse=True):
+            logger.info(f"   {entity_type}: {count}")
+
         return self.entities
 
     def _measure_dimensions(self, entity) -> Optional[Dict[str, float]]:
@@ -481,9 +516,14 @@ class DXFToDatabase:
 
     def match_templates(self):
         """Match entities to templates."""
-        print(f"🎯 Matching {len(self.entities)} entities to templates...")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"TEMPLATE MATCHING")
+        logger.info(f"{'='*80}")
+        logger.info(f"Total entities to match: {len(self.entities)}")
 
         matched = 0
+        matched_by_discipline = defaultdict(int)
+
         for entity in self.entities:
             template = self.template_library.match_entity(entity)
             if template:
@@ -491,8 +531,18 @@ class DXFToDatabase:
                 entity.ifc_class = template['ifc_class']
                 entity.element_name = template['template_name']
                 matched += 1
+                matched_by_discipline[entity.discipline] += 1
 
-        print(f"✅ Matched {matched}/{len(self.entities)} entities ({matched/len(self.entities)*100:.1f}%)")
+                if matched <= 5:  # Log first 5 matches
+                    logger.debug(f"  Matched: {entity.layer} → {entity.discipline}/{entity.ifc_class}")
+
+        logger.info(f"✅ Matched {matched}/{len(self.entities)} entities ({matched/len(self.entities)*100:.1f}%)")
+
+        # Log discipline breakdown
+        logger.info(f"\n📊 Matched Entities by Discipline:")
+        for discipline, count in sorted(matched_by_discipline.items(), key=lambda x: x[1], reverse=True):
+            logger.info(f"   {discipline}: {count}")
+
         return matched
 
     def detect_elevation_views(self) -> bool:

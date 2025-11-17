@@ -54,6 +54,11 @@ echo ""
 echo "Step 2: Generating ELEC discipline..."
 python3 Scripts/master_routing.py Terminal1_MainBuilding_FILTERED.db --discipline ELEC --device-type light_fixture --generate-devices
 
+# Step 3: Add geometry to generated devices (CRITICAL - was missing!)
+echo ""
+echo "Step 3: Adding geometry to generated devices..."
+python3 add_device_geometry.py
+
 echo ""
 echo "================================================================================"
 echo "LAYER 2 COMPLETE"
