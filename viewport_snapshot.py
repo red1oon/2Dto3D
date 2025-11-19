@@ -567,6 +567,120 @@ class DatabaseGeometryLoader:
 
         return center, max(size, 1.0)
 
+    def get_element_by_guid(self, guid):
+        """Get element center and bounds by GUID."""
+        cursor = self.conn.cursor()
+
+        query = """
+        SELECT
+            em.guid,
+            em.ifc_class,
+            et.center_x,
+            et.center_y,
+            et.center_z,
+            bg.vertices
+        FROM elements_meta em
+        JOIN element_instances ei ON em.guid = ei.guid
+        JOIN base_geometries bg ON ei.geometry_hash = bg.geometry_hash
+        LEFT JOIN element_transforms et ON em.guid = et.guid
+        WHERE em.guid = ?
+        """
+
+        try:
+            cursor.execute(query, (guid,))
+            row = cursor.fetchone()
+        except sqlite3.OperationalError:
+            # Try alternate schema
+            query = """
+            SELECT
+                em.guid,
+                em.ifc_class,
+                NULL as center_x,
+                NULL as center_y,
+                NULL as center_z,
+                bg.vertices
+            FROM elements_meta em
+            JOIN element_geometry eg ON em.guid = eg.guid
+            JOIN base_geometries bg ON eg.geometry_hash = bg.geometry_hash
+            WHERE em.guid = ?
+            """
+            cursor.execute(query, (guid,))
+            row = cursor.fetchone()
+
+        if not row:
+            return None
+
+        # Get vertices and calculate bounds
+        # Note: vertices are stored at world positions already
+        vertices = self.decode_blob(row['vertices'], 'vertices')
+        verts = np.array(vertices)
+
+        min_bounds = verts.min(axis=0)
+        max_bounds = verts.max(axis=0)
+        element_center = (min_bounds + max_bounds) / 2
+        element_size = np.linalg.norm(max_bounds - min_bounds)
+
+        return {
+            'guid': row['guid'],
+            'ifc_class': row['ifc_class'],
+            'center': element_center,
+            'size': max(element_size, 0.1),
+            'min_bounds': min_bounds,
+            'max_bounds': max_bounds
+        }
+
+    def find_nearest_element(self, point):
+        """Find element nearest to a 3D point."""
+        cursor = self.conn.cursor()
+
+        query = """
+        SELECT
+            em.guid,
+            em.ifc_class,
+            et.center_x,
+            et.center_y,
+            et.center_z
+        FROM elements_meta em
+        LEFT JOIN element_transforms et ON em.guid = et.guid
+        WHERE et.center_x IS NOT NULL
+        """
+
+        cursor.execute(query)
+        rows = cursor.fetchall()
+
+        if not rows:
+            return None
+
+        point = np.array(point)
+        nearest = None
+        min_dist = float('inf')
+
+        for row in rows:
+            center = np.array([row['center_x'], row['center_y'], row['center_z']])
+            dist = np.linalg.norm(center - point)
+            if dist < min_dist:
+                min_dist = dist
+                nearest = row['guid']
+
+        if nearest:
+            return self.get_element_by_guid(nearest)
+
+        return None
+
+    def list_elements_by_class(self, ifc_class):
+        """List all elements of a given IFC class."""
+        cursor = self.conn.cursor()
+
+        query = """
+        SELECT guid, ifc_class
+        FROM elements_meta
+        WHERE ifc_class LIKE ?
+        ORDER BY ifc_class, guid
+        """
+
+        cursor.execute(query, (f'%{ifc_class}%',))
+        return [dict(row) for row in cursor.fetchall()]
+
 
 def render_database(db_path: str, output_path: str = None,
                     angle: str = 'iso', distance: float = 1.0,
@@ -577,7 +691,10 @@ def render_database(db_path: str, output_path: str = None,
                     color_by: str = 'class',
                     floor_z: float = None,
                     floor_tolerance: float = 2.0,
-                    bbox: tuple = None):
+                    bbox: tuple = None,
+                    focus_guid: str = None,
+                    focus_point: tuple = None,
+                    focus_padding: float = 2.0):
     """
     Render database geometry to PNG.
 
@@ -594,6 +711,9 @@ def render_database(db_path: str, output_path: str = None,
         floor_z: Filter by floor Z level (e.g., 0 for ground floor)
         floor_tolerance: Z tolerance for floor filtering (default: 2.0m)
         bbox: Bounding box tuple (min_x, min_y, max_x, max_y)
+        focus_guid: GUID of element to focus camera on
+        focus_point: 3D point (x,y,z) to find nearest element and focus
+        focus_padding: Padding multiplier around focused element (default: 2.0)
 
     Returns:
         Path to saved PNG file
@@ -614,6 +734,45 @@ def render_database(db_path: str, output_path: str = None,
 
     # Load geometry
     loader = DatabaseGeometryLoader(db_path)
+
+    # Handle focus mode - find element and auto-set bbox
+    focus_element = None
+    if focus_guid:
+        focus_element = loader.get_element_by_guid(focus_guid)
+        if focus_element:
+            print(f"Focusing on: {focus_element['ifc_class']} ({focus_guid[:20]}...)")
+        else:
+            print(f"Warning: Element {focus_guid} not found")
+    elif focus_point:
+        focus_element = loader.find_nearest_element(focus_point)
+        if focus_element:
+            print(f"Nearest element: {focus_element['ifc_class']} ({focus_element['guid'][:20]}...)")
+        else:
+            print(f"Warning: No element found near {focus_point}")
+
+    # If focusing on element, auto-calculate bbox around it
+    if focus_element:
+        # Get element bounds with padding
+        padding = focus_element['size'] * focus_padding
+        min_b = focus_element['min_bounds']
+        max_b = focus_element['max_bounds']
+
+        # Set bbox to element bounds + padding
+        bbox = (
+            min_b[0] - padding,
+            min_b[1] - padding,
+            max_b[0] + padding,
+            max_b[1] + padding
+        )
+
+        # Set floor filter to element's Z level
+        element_z = focus_element['center'][2]
+        floor_z = element_z
+        floor_tolerance = focus_element['size'] + padding
+
+        print(f"Auto bbox: X=[{bbox[0]:.1f},{bbox[2]:.1f}], Y=[{bbox[1]:.1f},{bbox[3]:.1f}]")
+        print(f"Auto floor: Z={floor_z:.1f}m (tolerance: {floor_tolerance:.1f}m)")
+
     meshes = loader.load_meshes(
         surface_only=surface_only,
         disciplines=disciplines,
@@ -631,8 +790,13 @@ def render_database(db_path: str, output_path: str = None,
 
     print(f"Loaded {len(meshes)} meshes from database")
 
-    # Get scene bounds
-    center, size = loader.get_scene_bounds(meshes)
+    # Get scene bounds - use focus element bounds if available
+    if focus_element:
+        center = focus_element['center']
+        size = focus_element['size'] * focus_padding * 2
+    else:
+        center, size = loader.get_scene_bounds(meshes)
+
     loader.close()
 
     print(f"Scene center: {center}, size: {size:.1f}")
@@ -729,6 +893,24 @@ def main():
         "--bbox", "-b",
         help="Bounding box region: minX,minY,maxX,maxY (e.g., -10,-20,10,20)"
     )
+    parser.add_argument(
+        "--focus-guid", "-g",
+        help="Focus camera on element by GUID (auto-sets bbox and floor)"
+    )
+    parser.add_argument(
+        "--focus-point", "-p",
+        help="Focus on nearest element to point: x,y,z (e.g., 0,0,3)"
+    )
+    parser.add_argument(
+        "--focus-padding",
+        type=float,
+        default=2.0,
+        help="Padding multiplier around focused element (default: 2.0)"
+    )
+    parser.add_argument(
+        "--list-elements",
+        help="List elements by IFC class (e.g., IfcFurniture) and exit"
+    )
 
     args = parser.parse_args()
 
@@ -763,6 +945,37 @@ def main():
             print("Expected format: minX,minY,maxX,maxY (e.g., -10,-20,10,20)")
             sys.exit(1)
 
+    # Parse focus point
+    focus_point = None
+    if args.focus_point:
+        try:
+            parts = [float(x.strip()) for x in args.focus_point.split(',')]
+            if len(parts) != 3:
+                raise ValueError("Need exactly 3 values")
+            focus_point = tuple(parts)  # (x, y, z)
+        except ValueError as e:
+            print(f"Invalid focus_point format: {args.focus_point} ({e})")
+            print("Expected format: x,y,z (e.g., 0,0,3)")
+            sys.exit(1)
+
+    # Handle list-elements mode
+    if args.list_elements:
+        loader = DatabaseGeometryLoader(args.database)
+        elements = loader.list_elements_by_class(args.list_elements)
+        loader.close()
+
+        if elements:
+            print(f"\nElements matching '{args.list_elements}':")
+            print("-" * 60)
+            for elem in elements[:50]:  # Limit to 50
+                print(f"  {elem['guid']}  {elem['ifc_class']}")
+            if len(elements) > 50:
+                print(f"  ... and {len(elements) - 50} more")
+            print(f"\nTotal: {len(elements)} elements")
+        else:
+            print(f"No elements found matching '{args.list_elements}'")
+        sys.exit(0)
+
     # Render
     output = render_database(
         args.database,
@@ -776,7 +989,10 @@ def main():
         args.color_by,
         args.floor,
         args.floor_tolerance,
-        bbox
+        bbox,
+        args.focus_guid,
+        focus_point,
+        args.focus_padding
     )
 
     if output:
