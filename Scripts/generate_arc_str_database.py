@@ -1701,9 +1701,9 @@ def main():
             print("\nGenerating information displays...")
 
             # Information kiosks - freestanding touch screens
-            info_kiosk_width = 0.8
-            info_kiosk_depth = 0.6
-            info_kiosk_height = 1.8
+            info_kiosk_width = 1.2   # Scaled up for visibility
+            info_kiosk_depth = 0.8
+            info_kiosk_height = 2.0
 
             # Departure boards - wall-mounted displays
             board_width = 3.0
@@ -1784,9 +1784,9 @@ def main():
         if gen_options.get('generate_retail', True) and structural_elements:
             print("\nGenerating ATM kiosks...")
 
-            atm_width = 0.6
-            atm_depth = 0.8
-            atm_height = 1.8
+            atm_width = 1.0   # Scaled up for visibility
+            atm_depth = 1.0
+            atm_height = 2.0
 
             # ATMs along west wall near entrance
             atm_positions = [
