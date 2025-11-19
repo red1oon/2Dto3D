@@ -1880,15 +1880,34 @@ def main():
 
                 elevation = floor_data.get('elevation_m', 0.0)
 
-                # 2 seating rows per floor (east and west sides of central area)
-                seating_positions = [
-                    {'pos': (slab_cx - 12, slab_cy), 'name': f'Seating_W_{floor_id}'},
-                    {'pos': (slab_cx + 12, slab_cy), 'name': f'Seating_E_{floor_id}'},
-                ]
+                # GF gets ample seating (main waiting area)
+                if floor_id == 'GF':
+                    # Balanced seating clusters on GF
+                    seating_positions = [
+                        # West waiting lounges (between shoplots and center)
+                        {'pos': (slab_cx - 8, slab_cy - 8), 'name': f'Seating_W1_{floor_id}'},
+                        {'pos': (slab_cx - 8, slab_cy + 2), 'name': f'Seating_W2_{floor_id}'},
+                        # East waiting lounges (between shoplots and center)
+                        {'pos': (slab_cx + 8, slab_cy - 8), 'name': f'Seating_E1_{floor_id}'},
+                        {'pos': (slab_cx + 8, slab_cy + 2), 'name': f'Seating_E2_{floor_id}'},
+                        # North waiting (pre-boarding area near gates)
+                        {'pos': (slab_cx - 6, slab_cy + 18), 'name': f'Seating_N1_{floor_id}'},
+                        {'pos': (slab_cx + 6, slab_cy + 18), 'name': f'Seating_N2_{floor_id}'},
+                        # South waiting (post-ticketing area)
+                        {'pos': (slab_cx, slab_cy - 18), 'name': f'Seating_S_{floor_id}'},
+                    ]
+                    rows_per_cluster = 3
+                else:
+                    # Upper floors get standard seating
+                    seating_positions = [
+                        {'pos': (slab_cx - 12, slab_cy), 'name': f'Seating_W_{floor_id}'},
+                        {'pos': (slab_cx + 12, slab_cy), 'name': f'Seating_E_{floor_id}'},
+                    ]
+                    rows_per_cluster = 3
 
                 for seat in seating_positions:
                     # Multiple rows of seats
-                    for row in range(3):
+                    for row in range(rows_per_cluster):
                         seat_guid = str(uuid.uuid4()).replace('-', '')[:22]
                         all_elements.append({
                             'guid': seat_guid,
@@ -1913,29 +1932,66 @@ def main():
 
             print(f"  Generated {seating_count} seating rows")
 
-        # Generate retail/F&B spaces (kiosks)
+        # Generate retail/F&B spaces (kiosks and shoplots)
         if gen_options.get('generate_retail', True) and structural_elements:
-            print("\nGenerating retail kiosks...")
+            print("\nGenerating retail kiosks and shoplots...")
 
-            kiosk_width = 4.0
-            kiosk_depth = 3.0
-            kiosk_height = 3.0
+            retail_count = 0
 
-            # Kiosks along main circulation corridor (1F only for now)
-            kiosk_positions = [
-                {'pos': (slab_cx - 15, slab_cy + 10), 'name': 'Retail_1'},
-                {'pos': (slab_cx + 15, slab_cy + 10), 'name': 'Retail_2'},
-                {'pos': (slab_cx - 15, slab_cy - 10), 'name': 'FnB_1'},
-                {'pos': (slab_cx + 15, slab_cy - 10), 'name': 'FnB_2'},
+            # GF Retail Shoplots (larger, along perimeter)
+            shoplots_gf = [
+                # West side shoplots
+                {'pos': (min_x + 6, slab_cy - 12), 'name': 'Shop_W1', 'size': (5.0, 4.0)},
+                {'pos': (min_x + 6, slab_cy - 4), 'name': 'Shop_W2', 'size': (5.0, 4.0)},
+                {'pos': (min_x + 6, slab_cy + 4), 'name': 'Shop_W3', 'size': (5.0, 4.0)},
+                # East side shoplots
+                {'pos': (max_x - 6, slab_cy - 12), 'name': 'Shop_E1', 'size': (5.0, 4.0)},
+                {'pos': (max_x - 6, slab_cy - 4), 'name': 'Shop_E2', 'size': (5.0, 4.0)},
+                {'pos': (max_x - 6, slab_cy + 4), 'name': 'Shop_E3', 'size': (5.0, 4.0)},
             ]
 
-            for kiosk in kiosk_positions:
+            for shop in shoplots_gf:
+                shop_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': shop_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcSpace',
+                    'floor': 'GF',
+                    'center_x': shop['pos'][0],
+                    'center_y': shop['pos'][1],
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': shop['size'][0],
+                    'layer': f'SHOPLOTS_{shop["name"]}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'space_config': {
+                        'width': shop['size'][0],
+                        'depth': shop['size'][1],
+                        'height': 3.5,
+                        'space_type': 'Retail'
+                    }
+                })
+                retail_count += 1
+
+            # GF Service kiosks (smaller, in circulation areas)
+            service_kiosks_gf = [
+                {'pos': (slab_cx - 8, slab_cy - 8), 'name': 'Service_1'},  # Ticketing support
+                {'pos': (slab_cx + 8, slab_cy - 8), 'name': 'Service_2'},  # Info/currency
+                {'pos': (slab_cx, slab_cy + 8), 'name': 'Service_3'},      # Baggage wrap
+            ]
+
+            kiosk_width = 3.0
+            kiosk_depth = 2.5
+            kiosk_height = 2.8
+
+            for kiosk in service_kiosks_gf:
                 kiosk_guid = str(uuid.uuid4()).replace('-', '')[:22]
                 all_elements.append({
                     'guid': kiosk_guid,
                     'discipline': 'ARC',
                     'ifc_class': 'IfcSpace',
-                    'floor': '1F',
+                    'floor': 'GF',
                     'center_x': kiosk['pos'][0],
                     'center_y': kiosk['pos'][1],
                     'center_z': 0.0,
@@ -1947,11 +2003,45 @@ def main():
                     'space_config': {
                         'width': kiosk_width,
                         'depth': kiosk_depth,
-                        'height': kiosk_height
+                        'height': kiosk_height,
+                        'space_type': 'Service Kiosk'
                     }
                 })
+                retail_count += 1
 
-            print(f"  Generated {len(kiosk_positions)} retail/F&B kiosks")
+            # 1F Kiosks (F&B focus - near canteen)
+            kiosks_1f = [
+                {'pos': (slab_cx - 15, slab_cy + 10), 'name': 'Retail_1F_1'},
+                {'pos': (slab_cx + 15, slab_cy + 10), 'name': 'Retail_1F_2'},
+                {'pos': (slab_cx - 15, slab_cy - 10), 'name': 'FnB_1F_1'},
+                {'pos': (slab_cx + 15, slab_cy - 10), 'name': 'FnB_1F_2'},
+            ]
+
+            for kiosk in kiosks_1f:
+                kiosk_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': kiosk_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcSpace',
+                    'floor': '1F',
+                    'center_x': kiosk['pos'][0],
+                    'center_y': kiosk['pos'][1],
+                    'center_z': 4.5,
+                    'rotation_z': 0,
+                    'length': 4.0,
+                    'layer': f'KIOSK_{kiosk["name"]}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'space_config': {
+                        'width': 4.0,
+                        'depth': 3.0,
+                        'height': 3.0,
+                        'space_type': 'F&B Kiosk'
+                    }
+                })
+                retail_count += 1
+
+            print(f"  Generated {retail_count} retail shoplots and kiosks")
 
         # Generate luggage cart corrals (GF only - transit hub amenity)
         if gen_options.get('generate_retail', True) and structural_elements:
