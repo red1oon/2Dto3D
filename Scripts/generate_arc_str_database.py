@@ -76,6 +76,81 @@ CHEATSHEET_FILE = BASE_DIR / "terminal1_cheatsheet.json"
 EXTRACTED_DIR = BASE_DIR / "SourceFiles" / "Terminal1_Extracted"
 OUTPUT_DIR = BASE_DIR / "DatabaseFiles"
 OUTPUT_DB = OUTPUT_DIR / "Terminal1_ARC_STR.db"
+GEOMETRY_LIBRARY = OUTPUT_DIR / "geometry_library.db"
+
+# ============================================================================
+# GEOMETRY LIBRARY LOADER
+# ============================================================================
+
+def load_geometry_library():
+    """Load fixture geometries from library database.
+
+    Returns dict mapping fixture_type -> (geometry_hash, vertices, faces, normals)
+    """
+    if not GEOMETRY_LIBRARY.exists():
+        print(f"  Warning: Geometry library not found: {GEOMETRY_LIBRARY}")
+        return {}
+
+    library = {}
+    conn = sqlite3.connect(GEOMETRY_LIBRARY)
+    cursor = conn.cursor()
+
+    # Get one geometry per fixture type (preferring smaller vertex counts for performance)
+    cursor.execute('''
+        SELECT fc.fixture_type, fc.geometry_hash, bg.vertices, bg.faces, bg.normals,
+               fc.vertex_count, fc.face_count
+        FROM fixture_catalog fc
+        JOIN base_geometries bg ON fc.geometry_hash = bg.geometry_hash
+        GROUP BY fc.fixture_type
+        HAVING fc.vertex_count = MIN(fc.vertex_count)
+    ''')
+
+    for row in cursor.fetchall():
+        fixture_type, geom_hash, vertices, faces, normals, v_count, f_count = row
+        library[fixture_type] = {
+            'hash': geom_hash,
+            'vertices': vertices,
+            'faces': faces,
+            'normals': normals,
+            'vertex_count': v_count,
+            'face_count': f_count
+        }
+
+    conn.close()
+    print(f"  Loaded {len(library)} fixture types from geometry library")
+    return library
+
+def transform_library_geometry(lib_geom, cx, cy, cz, scale=1.0):
+    """Transform library geometry to world position.
+
+    Library geometries are centered at origin, need to offset to world position.
+    Returns new vertices blob at world position.
+    """
+    import struct
+
+    vertices_blob = lib_geom['vertices']
+    vertex_count = lib_geom['vertex_count']
+
+    # Unpack vertices (3 floats per vertex)
+    vertices = struct.unpack(f'{vertex_count * 3}f', vertices_blob)
+
+    # Find centroid of original geometry
+    xs = vertices[0::3]
+    ys = vertices[1::3]
+    zs = vertices[2::3]
+    orig_cx = sum(xs) / len(xs)
+    orig_cy = sum(ys) / len(ys)
+    orig_cz = min(zs)  # Use min Z as base
+
+    # Transform: center at origin, scale, then move to world position
+    new_vertices = []
+    for i in range(vertex_count):
+        x = (vertices[i*3] - orig_cx) * scale + cx
+        y = (vertices[i*3 + 1] - orig_cy) * scale + cy
+        z = (vertices[i*3 + 2] - orig_cz) * scale + cz
+        new_vertices.extend([x, y, z])
+
+    return struct.pack(f'{len(new_vertices)}f', *new_vertices)
 
 # Also check for any .blend files to delete
 BLEND_OUTPUT = OUTPUT_DIR / "Terminal1_ARC_STR.blend"
@@ -3109,7 +3184,20 @@ def main():
 
     # Insert elements into database
     print("\nPopulating database...")
-    stats = {'by_class': {}, 'by_discipline': {}}
+
+    # Load geometry library for fixtures
+    geometry_library = load_geometry_library()
+
+    # Map IFC classes to library fixture types
+    ifc_to_fixture_map = {
+        'IfcFireSuppressionTerminal': 'sprinkler_pendent',
+        'IfcLightFixture': 'light_fixture',
+        'IfcAlarm': 'smoke_detector',
+        'IfcSanitaryTerminal': 'toilet',
+        'IfcFlowTerminal': 'basin',
+    }
+
+    stats = {'by_class': {}, 'by_discipline': {}, 'library_used': 0, 'generated': 0}
 
     for elem in all_elements:
         guid = elem['guid']
@@ -3126,22 +3214,51 @@ def main():
         material_name = material_info.get('name', 'Default')
         material_rgba = json.dumps(material_info.get('rgba', [0.7, 0.7, 0.7, 1.0]))
 
-        # Generate geometry using factory function (handles all element types)
-        geom_result = generate_element_geometry(elem, templates)
-        vertices, faces, normals = geom_result.vertices, geom_result.faces, geom_result.normals
+        # Check if we can use library geometry for this element
+        fixture_type = ifc_to_fixture_map.get(elem['ifc_class'])
+        use_library = fixture_type and fixture_type in geometry_library
 
-        # Pack and hash
-        v_blob = pack_vertices(vertices)
-        f_blob = pack_faces(faces)
-        n_blob = pack_normals(normals)
-        geom_hash = compute_hash(v_blob, f_blob)
+        if use_library:
+            # Use library geometry transformed to world position
+            lib_geom = geometry_library[fixture_type]
+            cx, cy, cz = elem['center_x'], elem['center_y'], elem['center_z']
+
+            # Scale based on element type (library geometries may be different sizes)
+            scale = 1.0
+            if fixture_type == 'sprinkler_pendent':
+                scale = 0.5  # Sprinklers are small
+            elif fixture_type == 'light_fixture':
+                scale = 0.3  # Lights scaled down
+
+            v_blob = transform_library_geometry(lib_geom, cx, cy, cz, scale)
+            f_blob = lib_geom['faces']
+            n_blob = lib_geom['normals']
+            vertex_count = lib_geom['vertex_count']
+            face_count = lib_geom['face_count']
+
+            # Compute hash for this positioned geometry
+            geom_hash = compute_hash(v_blob, f_blob)
+            stats['library_used'] += 1
+        else:
+            # Generate geometry using factory function (handles all element types)
+            geom_result = generate_element_geometry(elem, templates)
+            vertices, faces, normals = geom_result.vertices, geom_result.faces, geom_result.normals
+
+            # Pack and hash
+            v_blob = pack_vertices(vertices)
+            f_blob = pack_faces(faces)
+            n_blob = pack_normals(normals)
+            vertex_count = len(vertices)
+            face_count = len(faces)
+            geom_hash = compute_hash(v_blob, f_blob)
+            stats['generated'] += 1
 
         # Store geometry (each element has unique world-positioned geometry)
         cursor.execute("""
             INSERT OR IGNORE INTO base_geometries
             (geometry_hash, vertices, faces, normals, vertex_count, face_count)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (geom_hash, v_blob, f_blob, n_blob, len(vertices), len(faces)))
+        """, (geom_hash, v_blob, f_blob, n_blob, vertex_count, face_count))
 
         # Insert element metadata
         cursor.execute("""
@@ -3221,6 +3338,8 @@ def main():
     print(f"Total elements: {len(all_elements)}")
     print(f"Unique geometries: {len(template_hashes)}")
     print(f"Storage optimization: {len(all_elements)/len(template_hashes):.1f}x instances per geometry")
+    print(f"Library geometries used: {stats['library_used']}")
+    print(f"Generated geometries: {stats['generated']}")
 
     print("\nBy Discipline:")
     for disc, count in sorted(stats['by_discipline'].items()):
