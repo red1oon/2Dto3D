@@ -2622,6 +2622,123 @@ def main():
 
             print(f"  Generated {planter_count} planters")
 
+        # Generate vending machines (refreshments and snacks)
+        if gen_options.get('generate_seating', True) and structural_elements:
+            print("\nGenerating vending machines...")
+
+            vending_width = 0.9
+            vending_depth = 0.7
+            vending_height = 1.8
+
+            floors_config = building_config.get('floors', {})
+            vending_count = 0
+
+            for floor_id, floor_data in floors_config.items():
+                if floor_id in ['ROOF', '4F-6F']:
+                    continue
+
+                elevation = floor_data.get('elevation_m', 0.0)
+
+                # Vending machines near seating and corridors
+                vending_positions = [
+                    {'pos': (min_x + 5, slab_cy - 15), 'name': f'Vending_SW_{floor_id}', 'type': 'beverage'},
+                    {'pos': (min_x + 5, slab_cy + 15), 'name': f'Vending_NW_{floor_id}', 'type': 'snack'},
+                    {'pos': (max_x - 5, slab_cy), 'name': f'Vending_E_{floor_id}', 'type': 'beverage'},
+                ]
+
+                for vm in vending_positions:
+                    vm_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': vm_guid,
+                        'discipline': 'ARC',
+                        'ifc_class': 'IfcFurniture',
+                        'floor': floor_id,
+                        'center_x': vm['pos'][0],
+                        'center_y': vm['pos'][1],
+                        'center_z': elevation,
+                        'rotation_z': math.pi / 2 if vm['pos'][0] < slab_cx else -math.pi / 2,
+                        'length': vending_depth,
+                        'layer': f'VENDING_{vm["name"]}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None,
+                        'vending_config': {
+                            'width': vending_width,
+                            'depth': vending_depth,
+                            'height': vending_height,
+                            'type': vm['type']
+                        }
+                    })
+                    vending_count += 1
+
+            print(f"  Generated {vending_count} vending machines")
+
+        # Generate baby care / family room (GF - accessibility requirement)
+        if gen_options.get('generate_restrooms', True) and structural_elements:
+            print("\nGenerating baby care room...")
+
+            room_width = 4.0
+            room_depth = 3.5
+            room_height = 3.0
+
+            # Near restrooms for convenience
+            baby_care_guid = str(uuid.uuid4()).replace('-', '')[:22]
+            all_elements.append({
+                'guid': baby_care_guid,
+                'discipline': 'ARC',
+                'ifc_class': 'IfcSpace',
+                'floor': 'GF',
+                'center_x': min_x + 10,
+                'center_y': min_y + 10,
+                'center_z': 0.0,
+                'rotation_z': 0,
+                'length': room_width,
+                'layer': 'BABY_CARE_ROOM',
+                'source_file': 'building_config.json',
+                'polyline_points': None,
+                'space_config': {
+                    'width': room_width,
+                    'depth': room_depth,
+                    'height': room_height,
+                    'space_type': 'Baby Care',
+                    'features': ['changing_table', 'nursing_area', 'bottle_warmer']
+                }
+            })
+
+            print(f"  Generated 1 baby care room")
+
+        # Generate prayer room (multi-faith space)
+        if gen_options.get('generate_restrooms', True) and structural_elements:
+            print("\nGenerating prayer room...")
+
+            prayer_width = 5.0
+            prayer_depth = 4.0
+            prayer_height = 3.0
+
+            prayer_guid = str(uuid.uuid4()).replace('-', '')[:22]
+            all_elements.append({
+                'guid': prayer_guid,
+                'discipline': 'ARC',
+                'ifc_class': 'IfcSpace',
+                'floor': 'GF',
+                'center_x': max_x - 10,
+                'center_y': min_y + 10,
+                'center_z': 0.0,
+                'rotation_z': 0,
+                'length': prayer_width,
+                'layer': 'PRAYER_ROOM',
+                'source_file': 'building_config.json',
+                'polyline_points': None,
+                'space_config': {
+                    'width': prayer_width,
+                    'depth': prayer_depth,
+                    'height': prayer_height,
+                    'space_type': 'Prayer Room',
+                    'multi_faith': True
+                }
+            })
+
+            print(f"  Generated 1 prayer room")
+
         # Generate first aid station (GF - safety requirement)
         if gen_options.get('generate_restrooms', True) and structural_elements:
             print("\nGenerating first aid station...")
