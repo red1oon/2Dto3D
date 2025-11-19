@@ -1198,6 +1198,61 @@ def main():
 
             print(f"  Generated {len(pylon_positions)} signage pylons")
 
+        # Generate vehicle drop-off zone (south entrance)
+        if gen_options.get('generate_entrance_doors', True) and structural_elements:
+            print("\nGenerating drop-off zone...")
+
+            # Drop-off canopy/shelter
+            dropoff_canopy_guid = str(uuid.uuid4()).replace('-', '')[:22]
+            all_elements.append({
+                'guid': dropoff_canopy_guid,
+                'discipline': 'ARC',
+                'ifc_class': 'IfcSlab',
+                'floor': 'GF',
+                'center_x': slab_cx,
+                'center_y': min_y - 10,
+                'center_z': 5.0,  # Higher for vehicles
+                'rotation_z': 0,
+                'length': 15.0,
+                'layer': 'CANOPY_DROPOFF',
+                'source_file': 'building_config.json',
+                'polyline_points': None,
+                'slab_config': {
+                    'width': 15.0,
+                    'depth': 8.0,
+                    'thickness': 0.3
+                }
+            })
+
+            # Bollards for traffic control
+            bollard_spacing = 3.0
+            num_bollards = 6
+            start_x = slab_cx - (num_bollards - 1) * bollard_spacing / 2
+
+            for i in range(num_bollards):
+                bollard_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': bollard_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcFurniture',
+                    'floor': 'GF',
+                    'center_x': start_x + i * bollard_spacing,
+                    'center_y': min_y - 6,
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': 0.3,
+                    'layer': f'BOLLARD_{i+1}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'furniture_config': {
+                        'width': 0.3,
+                        'depth': 0.3,
+                        'height': 1.0
+                    }
+                })
+
+            print(f"  Generated drop-off canopy with {num_bollards} bollards")
+
         # Generate security checkpoints (GF - near entrances)
         if gen_options.get('generate_counters', True) and structural_elements:
             print("\nGenerating security checkpoints...")
