@@ -1899,6 +1899,45 @@ def main():
 
             print(f"  Generated 1 first aid station")
 
+        # Generate baggage claim carousel (GF - arrival facility)
+        if gen_options.get('generate_counters', True) and structural_elements:
+            print("\nGenerating baggage claim area...")
+
+            # Carousel dimensions (oval conveyor belt)
+            carousel_width = 12.0
+            carousel_depth = 4.0
+            carousel_height = 0.8
+
+            # Two carousels for arrival hall
+            carousel_positions = [
+                {'pos': (slab_cx - 8, max_y - 15), 'name': 'Carousel_1'},
+                {'pos': (slab_cx + 8, max_y - 15), 'name': 'Carousel_2'},
+            ]
+
+            for carousel in carousel_positions:
+                carousel_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': carousel_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcFurniture',
+                    'floor': 'GF',
+                    'center_x': carousel['pos'][0],
+                    'center_y': carousel['pos'][1],
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': carousel_width,
+                    'layer': f'BAGGAGE_{carousel["name"]}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'furniture_config': {
+                        'width': carousel_width,
+                        'depth': carousel_depth,
+                        'height': carousel_height
+                    }
+                })
+
+            print(f"  Generated {len(carousel_positions)} baggage carousels")
+
         # Generate glass partition walls in public areas
         if gen_options.get('generate_glass_partitions', True) and structural_elements:
             print("\nGenerating glass partition walls...")
