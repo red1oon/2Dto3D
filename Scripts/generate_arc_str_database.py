@@ -429,6 +429,19 @@ def create_database_schema(conn: sqlite3.Connection):
             minY, maxY,
             minZ, maxZ
         );
+
+        -- Element geometry view (for Bonsai bake compatibility)
+        CREATE VIEW IF NOT EXISTS element_geometry AS
+        SELECT
+            ei.guid,
+            ei.geometry_hash,
+            bg.vertices,
+            bg.faces,
+            bg.vertex_count,
+            bg.face_count,
+            bg.normals
+        FROM element_instances ei
+        JOIN base_geometries bg ON ei.geometry_hash = bg.geometry_hash;
     """)
 
     conn.commit()
@@ -518,6 +531,92 @@ def create_template_geometries(conn: sqlite3.Connection, templates: Dict) -> Dic
     return template_hashes
 
 # ============================================================================
+# WALL SEGMENT MERGING
+# ============================================================================
+
+def merge_wall_segments(segments: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+                        tolerance: float = 100.0) -> List[List[Tuple[float, float]]]:
+    """
+    Merge connected LINE/POLYLINE segments into continuous wall chains.
+
+    Args:
+        segments: List of (start, end) coordinate tuples in mm
+        tolerance: Snapping tolerance in mm (default 100mm = 10cm)
+
+    Returns:
+        List of polyline chains, each a list of (x, y) points
+    """
+    from collections import defaultdict
+
+    def round_to_tolerance(x, y):
+        return (round(x / tolerance) * tolerance, round(y / tolerance) * tolerance)
+
+    # Build adjacency graph with snapped coordinates
+    graph = defaultdict(set)
+    point_to_original = {}  # Map snapped -> original coordinates
+
+    for start, end in segments:
+        start_snap = round_to_tolerance(*start)
+        end_snap = round_to_tolerance(*end)
+
+        if start_snap == end_snap:
+            continue  # Skip zero-length segments
+
+        graph[start_snap].add(end_snap)
+        graph[end_snap].add(start_snap)
+
+        # Keep best original coordinates (average if multiple)
+        if start_snap not in point_to_original:
+            point_to_original[start_snap] = start
+        if end_snap not in point_to_original:
+            point_to_original[end_snap] = end
+
+    # Find chains using DFS
+    visited = set()
+    chains = []
+
+    def build_chain(start_node):
+        """Build a chain following connected segments."""
+        chain = [start_node]
+        visited.add(start_node)
+
+        # Extend in one direction
+        current = start_node
+        while True:
+            neighbors = graph[current] - visited
+            if not neighbors:
+                break
+            next_node = min(neighbors)  # Deterministic choice
+            chain.append(next_node)
+            visited.add(next_node)
+            current = next_node
+
+        # Try extending from start in other direction
+        current = start_node
+        while True:
+            neighbors = graph[current] - visited
+            if not neighbors:
+                break
+            next_node = min(neighbors)
+            chain.insert(0, next_node)
+            visited.add(next_node)
+            current = next_node
+
+        return chain
+
+    # Build all chains
+    for node in graph:
+        if node not in visited:
+            chain = build_chain(node)
+            if len(chain) >= 2:
+                # Convert back to original coordinates
+                original_chain = [point_to_original.get(p, p) for p in chain]
+                chains.append(original_chain)
+
+    return chains
+
+
+# ============================================================================
 # DXF EXTRACTION
 # ============================================================================
 
@@ -529,6 +628,7 @@ def extract_dxf_entities(dxf_path: Path, discipline: str, floor: str,
                         templates: Dict, layer_mapping: Dict) -> List[Dict]:
     """
     Extract entities from DXF file and classify by layer.
+    Merges wall LINE segments into continuous polylines for proper extrusion.
     Returns list of element dicts ready for database insertion.
     """
     elements = []
@@ -541,32 +641,126 @@ def extract_dxf_entities(dxf_path: Path, discipline: str, floor: str,
 
     msp = doc.modelspace()
 
+    # Determine coordinate offset based on discipline
+    if discipline == 'ARC':
+        offset_x, offset_y = -68.9, 1598.6
+    else:  # STR
+        offset_x, offset_y = -35.7, -44.5
+
+    # ========================================================================
+    # PHASE 1: Collect and merge wall segments
+    # ========================================================================
+    wall_segments = []  # List of (start, end) in mm
+
+    for entity in msp:
+        if not hasattr(entity.dxf, 'layer'):
+            continue
+
+        layer_raw = entity.dxf.layer
+        layer_upper = layer_raw.upper()
+        mapping = layer_mapping.get(layer_raw) or layer_mapping.get(layer_upper)
+
+        if not mapping or mapping.get('ifc_class') != 'IfcWall':
+            continue
+
+        # Collect wall segments
+        if entity.dxftype() == 'LINE':
+            start = (entity.dxf.start.x, entity.dxf.start.y)
+            end = (entity.dxf.end.x, entity.dxf.end.y)
+            wall_segments.append((start, end))
+
+        elif entity.dxftype() == 'LWPOLYLINE':
+            points = list(entity.get_points('xy'))
+            for i in range(len(points) - 1):
+                start = (points[i][0], points[i][1])
+                end = (points[i+1][0], points[i+1][1])
+                wall_segments.append((start, end))
+
+    # Merge wall segments into continuous chains
+    if wall_segments:
+        merged_chains = merge_wall_segments(wall_segments, tolerance=100.0)
+        print(f"    Walls: {len(wall_segments)} segments → {len(merged_chains)} merged chains")
+
+        # Create wall elements from merged chains
+        for chain in merged_chains:
+            if len(chain) < 2:
+                continue
+
+            # Calculate chain properties
+            total_length = 0
+            for i in range(len(chain) - 1):
+                dx = chain[i+1][0] - chain[i][0]
+                dy = chain[i+1][1] - chain[i][1]
+                total_length += math.sqrt(dx*dx + dy*dy)
+
+            # Skip very short walls (likely artifacts)
+            if total_length < 200:  # 200mm = 0.2m
+                continue
+
+            # Calculate center
+            cx = sum(p[0] for p in chain) / len(chain)
+            cy = sum(p[1] for p in chain) / len(chain)
+
+            # Transform chain to world coordinates
+            transformed_chain = []
+            for px, py in chain:
+                px_m, py_m = px / 1000.0, py / 1000.0
+                px_rot, py_rot = apply_rotation_transform(px_m, py_m)
+                transformed_chain.append((px_rot + offset_x, py_rot + offset_y))
+
+            # Transform center
+            cx_m, cy_m = cx / 1000.0, cy / 1000.0
+            cx_rot, cy_rot = apply_rotation_transform(cx_m, cy_m)
+            cx_final = cx_rot + offset_x
+            cy_final = cy_rot + offset_y
+
+            guid = str(uuid.uuid4()).replace('-', '')[:22]
+            elements.append({
+                'guid': guid,
+                'discipline': discipline,
+                'ifc_class': 'IfcWall',
+                'floor': floor,
+                'center_x': cx_final,
+                'center_y': cy_final,
+                'center_z': 0,
+                'rotation_z': 0,
+                'length': total_length / 1000.0,
+                'layer': 'WALL',
+                'source_file': dxf_path.name,
+                'polyline_points': transformed_chain
+            })
+
+    # ========================================================================
+    # PHASE 2: Extract non-wall entities normally
+    # ========================================================================
     for entity in msp:
         if entity.dxftype() not in ['LINE', 'LWPOLYLINE', 'CIRCLE', 'ARC', 'INSERT']:
             continue
 
-        # Get layer and map to IFC class
         layer_raw = entity.dxf.layer if hasattr(entity.dxf, 'layer') else ''
         layer_upper = layer_raw.upper()
-
-        # Try exact match first, then uppercase
         mapping = layer_mapping.get(layer_raw) or layer_mapping.get(layer_upper)
+
         if not mapping:
             continue
 
         ifc_class = mapping.get('ifc_class', 'IfcBuildingElementProxy')
         elem_discipline = mapping.get('discipline', discipline)
 
+        # Skip walls - already processed above
+        if ifc_class == 'IfcWall':
+            continue
+
         # Extract position based on entity type
         x, y, z = 0, 0, 0
         length = 0
         rotation = 0
-        polyline_points_raw = None  # For LWPOLYLINE walls
+        polyline_points_raw = None
 
         if entity.dxftype() == 'CIRCLE':
             x, y = entity.dxf.center.x, entity.dxf.center.y
             z = entity.dxf.center.z if hasattr(entity.dxf.center, 'z') else 0
-            length = entity.dxf.radius * 2  # Diameter
+            length = entity.dxf.radius * 2
 
         elif entity.dxftype() == 'LINE':
             start = entity.dxf.start
@@ -583,11 +777,9 @@ def extract_dxf_entities(dxf_path: Path, discipline: str, floor: str,
             if points:
                 x = sum(p[0] for p in points) / len(points)
                 y = sum(p[1] for p in points) / len(points)
-                # Calculate total length
                 for i in range(len(points) - 1):
                     length += math.sqrt((points[i+1][0] - points[i][0])**2 +
                                        (points[i+1][1] - points[i][1])**2)
-                # Store polyline points for wall extrusion (will be transformed later)
                 polyline_points_raw = points
 
         elif entity.dxftype() == 'INSERT':
@@ -600,42 +792,24 @@ def extract_dxf_entities(dxf_path: Path, discipline: str, floor: str,
             z = entity.dxf.center.z if hasattr(entity.dxf.center, 'z') else 0
             length = entity.dxf.radius
 
-        # Convert from mm to m
-        x_m = x / 1000.0
-        y_m = y / 1000.0
-        z_m = z / 1000.0
+        # Convert to meters and apply transforms
+        x_m, y_m, z_m = x / 1000.0, y / 1000.0, z / 1000.0
         length_m = length / 1000.0
 
-        # Apply rotation transform (90° CCW)
         x_rot, y_rot = apply_rotation_transform(x_m, y_m)
-
-        # Apply alignment offset to bring all geometry near origin (0, 0)
-        # Centers from actual extracted DXF files (after rotation):
-        # - ARC: (68.9, -1598.6) m
-        # - STR (all floors): (35.7, 44.5) m
-
-        if discipline == 'ARC':
-            x_final = x_rot - 68.9
-            y_final = y_rot + 1598.6
-            offset_x, offset_y = -68.9, 1598.6
-        else:  # STR - all floors have same coordinate system in extracted files
-            x_final = x_rot - 35.7
-            y_final = y_rot - 44.5
-            offset_x, offset_y = -35.7, -44.5
+        x_final = x_rot + offset_x
+        y_final = y_rot + offset_y
 
         # Transform polyline points if present
         polyline_points_transformed = None
         if polyline_points_raw:
             polyline_points_transformed = []
             for px, py in polyline_points_raw:
-                # Convert mm to m, apply rotation, apply offset
                 px_m, py_m = px / 1000.0, py / 1000.0
                 px_rot, py_rot = apply_rotation_transform(px_m, py_m)
                 polyline_points_transformed.append((px_rot + offset_x, py_rot + offset_y))
 
-        # Generate GUID
         guid = str(uuid.uuid4()).replace('-', '')[:22]
-
         elements.append({
             'guid': guid,
             'discipline': elem_discipline,
@@ -666,6 +840,12 @@ def main():
     if BLEND_OUTPUT.exists():
         BLEND_OUTPUT.unlink()
         print(f"Deleted existing: {BLEND_OUTPUT.name}")
+
+    # Also delete _full.blend variant (created by Bonsai bake)
+    blend_full = OUTPUT_DIR / "Terminal1_ARC_STR_full.blend"
+    if blend_full.exists():
+        blend_full.unlink()
+        print(f"Deleted existing: {blend_full.name}")
 
     if OUTPUT_DB.exists():
         OUTPUT_DB.unlink()
@@ -862,6 +1042,14 @@ def main():
     print("\n" + "="*70)
     print("Next: Load in Bonsai BBox Preview or run blend bake")
     print("="*70)
+
+    # Auto-run audit if --audit flag is passed
+    if '--audit' in sys.argv:
+        print("\n")
+        from audit_database import generate_report
+        report = generate_report(str(OUTPUT_DB))
+        print(report)
+
 
 if __name__ == "__main__":
     main()
