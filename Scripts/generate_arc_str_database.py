@@ -1098,6 +1098,106 @@ def main():
 
             print(f"  Generated 4 entrance doors")
 
+        # Generate covered walkway/canopy to jetty (north side)
+        if gen_options.get('generate_entrance_doors', True) and structural_elements:
+            print("\nGenerating jetty canopy...")
+
+            canopy_width = 8.0
+            canopy_length = 20.0  # Extends from building to jetty
+            canopy_height = 4.0
+            canopy_thickness = 0.3
+
+            # Canopy structure extending north from building
+            canopy_guid = str(uuid.uuid4()).replace('-', '')[:22]
+            all_elements.append({
+                'guid': canopy_guid,
+                'discipline': 'ARC',
+                'ifc_class': 'IfcSlab',  # Canopy roof
+                'floor': 'GF',
+                'center_x': slab_cx,
+                'center_y': max_y + canopy_length/2,
+                'center_z': canopy_height,
+                'rotation_z': 0,
+                'length': canopy_length,
+                'layer': 'CANOPY_JETTY',
+                'source_file': 'building_config.json',
+                'polyline_points': None,
+                'slab_config': {
+                    'width': canopy_width,
+                    'depth': canopy_length,
+                    'thickness': canopy_thickness
+                }
+            })
+
+            # Support columns for canopy
+            canopy_columns = [
+                {'pos': (slab_cx - 3, max_y + 5), 'name': 'CanopyCol_1'},
+                {'pos': (slab_cx + 3, max_y + 5), 'name': 'CanopyCol_2'},
+                {'pos': (slab_cx - 3, max_y + 15), 'name': 'CanopyCol_3'},
+                {'pos': (slab_cx + 3, max_y + 15), 'name': 'CanopyCol_4'},
+            ]
+
+            for col in canopy_columns:
+                col_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': col_guid,
+                    'discipline': 'STR',
+                    'ifc_class': 'IfcColumn',
+                    'floor': 'GF',
+                    'center_x': col['pos'][0],
+                    'center_y': col['pos'][1],
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': 0.3,  # Column diameter
+                    'layer': f'STRUCT_{col["name"]}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'column_config': {
+                        'diameter': 0.3,
+                        'height': canopy_height
+                    }
+                })
+
+            print(f"  Generated jetty canopy with 4 columns")
+
+        # Generate external signage pylon
+        if gen_options.get('generate_entrance_doors', True) and structural_elements:
+            print("\nGenerating signage pylons...")
+
+            pylon_width = 2.0
+            pylon_depth = 0.5
+            pylon_height = 8.0
+
+            # Pylons at main entrances
+            pylon_positions = [
+                {'pos': (slab_cx, min_y - 5), 'name': 'Pylon_South'},  # Main entrance
+                {'pos': (min_x - 5, slab_cy), 'name': 'Pylon_West'},
+            ]
+
+            for pylon in pylon_positions:
+                pylon_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': pylon_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcFurniture',
+                    'floor': 'GF',
+                    'center_x': pylon['pos'][0],
+                    'center_y': pylon['pos'][1],
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': pylon_width,
+                    'layer': f'SIGNAGE_{pylon["name"]}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'furniture_config': {
+                        'width': pylon_width,
+                        'depth': pylon_depth,
+                        'height': pylon_height
+                    }
+                })
+
+            print(f"  Generated {len(pylon_positions)} signage pylons")
+
         # Generate security checkpoints (GF - near entrances)
         if gen_options.get('generate_counters', True) and structural_elements:
             print("\nGenerating security checkpoints...")
