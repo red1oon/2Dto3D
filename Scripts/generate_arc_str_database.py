@@ -43,6 +43,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
 
+# Import MEP generator classes
+from mep_generator import MEPGeneratorOrchestrator
+
 # Add ezdxf support
 try:
     import ezdxf
@@ -1518,9 +1521,55 @@ def main():
             # - Connection points at floor levels
 
         # ====================================================================
-        # FIRE PROTECTION (FP) - Sprinklers and pipes
+        # MEP GENERATION (FP, ELEC, ACMV) - Using modular generator classes
         # ====================================================================
-        if gen_options.get('generate_fire_protection', False) and structural_elements:
+        generate_mep = (gen_options.get('generate_fire_protection', False) or
+                       gen_options.get('generate_electrical', False))
+
+        if generate_mep and structural_elements:
+            print("\nGenerating MEP elements (FP, ELEC)...")
+
+            # Check if zones_config exists, create default if not
+            script_dir = Path(__file__).parent
+            zones_config_path = script_dir / 'zones_config.json'
+            if not zones_config_path.exists():
+                # Create minimal zones config
+                default_zones = {
+                    "_comment": "Zone configuration for Mini Bonsai GUI",
+                    "_gui_editable": True,
+                    "vertical_stratification": {
+                        "FP_sprinkler": -0.3,
+                        "FP_pipe_main": -0.5,
+                        "FP_pipe_branch": -0.45,
+                        "ELEC_light": -0.55,
+                        "ELEC_conduit_main": -0.7,
+                        "ELEC_conduit_branch": -0.65
+                    },
+                    "discipline_clearances": {
+                        "FP_to_ELEC": 0.3,
+                        "FP_to_ACMV": 0.5,
+                        "ELEC_to_ACMV": 0.3
+                    },
+                    "toilet_zones": [],
+                    "ac_equipment": [],
+                    "fire_equipment": []
+                }
+                with open(zones_config_path, 'w') as f:
+                    json.dump(default_zones, f, indent=2)
+
+            # Use MEP generator orchestrator
+            mep_orchestrator = MEPGeneratorOrchestrator(
+                str(zones_config_path),
+                str(script_dir.parent / 'building_config.json')
+            )
+
+            mep_elements = mep_orchestrator.generate_all(structural_elements)
+            all_elements.extend(mep_elements)
+
+            print(f"  Total MEP elements: {len(mep_elements)}")
+
+        # Legacy inline generation (kept for reference, disabled)
+        if False and gen_options.get('generate_fire_protection', False) and structural_elements:
             print("\nGenerating Fire Protection elements...")
 
             mep_config = building_config.get('mep_config', {})
@@ -1642,9 +1691,9 @@ def main():
             print(f"  Generated {sprinkler_count} sprinklers + {pipe_count} pipe segments")
 
         # ====================================================================
-        # ELECTRICAL (ELEC) - Light fixtures and conduits
+        # ELECTRICAL (ELEC) - Light fixtures and conduits (LEGACY - disabled)
         # ====================================================================
-        if gen_options.get('generate_electrical', False) and structural_elements:
+        if False and gen_options.get('generate_electrical', False) and structural_elements:
             print("\nGenerating Electrical elements...")
 
             mep_config = building_config.get('mep_config', {})
