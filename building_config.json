@@ -190,6 +190,7 @@
     "generate_counters": true,
     "generate_seating": true,
     "generate_retail": true,
+    "generate_glass_partitions": true,
     "generate_conduits": false,
     "generate_fire_protection": true,
     "generate_electrical": true,

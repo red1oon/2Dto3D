@@ -1517,6 +1517,183 @@ def main():
 
             print(f"  Generated {len(kiosk_positions)} retail/F&B kiosks")
 
+        # Generate glass partition walls in public areas
+        if gen_options.get('generate_glass_partitions', True) and structural_elements:
+            print("\nGenerating glass partition walls...")
+
+            glass_thickness = 0.012  # 12mm tempered glass
+            glass_height = 2.4  # Partial height partitions
+            glass_panel_width = 1.5  # Standard glass panel width
+
+            # Glass material with transparency
+            glass_rgba = [0.3, 0.5, 0.8, 0.3]  # Semi-transparent blue-tinted
+
+            floors_config = building_config.get('floors', {})
+            partition_count = 0
+
+            for floor_id, floor_data in floors_config.items():
+                if floor_id == 'ROOF':
+                    continue
+
+                elevation = floor_data.get('elevation_m', 0.0)
+
+                # ================================================================
+                # 1. Waiting lounge enclosures (around seating areas)
+                # ================================================================
+                # East and West waiting lounges - create L-shaped partitions
+                lounge_positions = [
+                    # West lounge - L-shape facing center
+                    {
+                        'walls': [
+                            {'start': (slab_cx - 18, slab_cy - 4), 'end': (slab_cx - 18, slab_cy + 4)},  # West edge
+                            {'start': (slab_cx - 18, slab_cy + 4), 'end': (slab_cx - 7, slab_cy + 4)},   # North edge
+                        ],
+                        'name': f'Lounge_W_{floor_id}'
+                    },
+                    # East lounge - L-shape facing center
+                    {
+                        'walls': [
+                            {'start': (slab_cx + 18, slab_cy - 4), 'end': (slab_cx + 18, slab_cy + 4)},  # East edge
+                            {'start': (slab_cx + 7, slab_cy + 4), 'end': (slab_cx + 18, slab_cy + 4)},   # North edge
+                        ],
+                        'name': f'Lounge_E_{floor_id}'
+                    },
+                ]
+
+                for lounge in lounge_positions:
+                    for i, wall in enumerate(lounge['walls']):
+                        start = wall['start']
+                        end = wall['end']
+
+                        # Calculate wall properties
+                        dx = end[0] - start[0]
+                        dy = end[1] - start[1]
+                        length = math.sqrt(dx*dx + dy*dy)
+                        cx = (start[0] + end[0]) / 2
+                        cy = (start[1] + end[1]) / 2
+                        rotation = math.atan2(dy, dx)
+
+                        # Generate individual glass panels along the wall
+                        num_panels = max(1, int(length / glass_panel_width))
+                        panel_length = length / num_panels
+
+                        for p in range(num_panels):
+                            # Calculate panel center position along wall
+                            t = (p + 0.5) / num_panels
+                            panel_cx = start[0] + dx * t
+                            panel_cy = start[1] + dy * t
+
+                            partition_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                            all_elements.append({
+                                'guid': partition_guid,
+                                'discipline': 'ARC',
+                                'ifc_class': 'IfcWall',
+                                'floor': floor_id,
+                                'center_x': panel_cx,
+                                'center_y': panel_cy,
+                                'center_z': elevation,
+                                'rotation_z': rotation,
+                                'length': panel_length,
+                                'layer': f'GLASS_PARTITION_{lounge["name"]}_{i}',
+                                'source_file': 'building_config.json',
+                                'polyline_points': None,
+                                'glass_partition_config': {
+                                    'thickness': glass_thickness,
+                                    'height': glass_height,
+                                    'length': panel_length,
+                                    'material_rgba': glass_rgba
+                                }
+                            })
+                            partition_count += 1
+
+                # ================================================================
+                # 2. Check-in counter area dividers (GF only)
+                # ================================================================
+                if floor_id == 'GF':
+                    # Glass queue barriers between counter stations
+                    num_dividers = 5  # Between 6 counters
+                    counter_spacing = 3.0
+                    start_x = slab_cx - (num_dividers) * counter_spacing / 2
+                    divider_length = 4.0
+                    divider_y = min_y + 15
+
+                    for i in range(num_dividers):
+                        divider_x = start_x + i * counter_spacing + counter_spacing / 2
+
+                        partition_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                        all_elements.append({
+                            'guid': partition_guid,
+                            'discipline': 'ARC',
+                            'ifc_class': 'IfcWall',
+                            'floor': floor_id,
+                            'center_x': divider_x,
+                            'center_y': divider_y - divider_length / 2,
+                            'center_z': elevation,
+                            'rotation_z': math.pi / 2,  # Perpendicular to counters
+                            'length': divider_length,
+                            'layer': f'GLASS_QUEUE_DIVIDER_{i}',
+                            'source_file': 'building_config.json',
+                            'polyline_points': None,
+                            'glass_partition_config': {
+                                'thickness': glass_thickness,
+                                'height': 1.2,  # Lower height for queue barriers
+                                'length': divider_length,
+                                'material_rgba': glass_rgba
+                            }
+                        })
+                        partition_count += 1
+
+                # ================================================================
+                # 3. Retail zone enclosures (around kiosks)
+                # ================================================================
+                if floor_id == '1F':
+                    # Glass fronts for retail kiosks
+                    kiosk_centers = [
+                        (slab_cx - 15, slab_cy + 10),  # Retail_1
+                        (slab_cx + 15, slab_cy + 10),  # Retail_2
+                        (slab_cx - 15, slab_cy - 10),  # FnB_1
+                        (slab_cx + 15, slab_cy - 10),  # FnB_2
+                    ]
+
+                    kiosk_width = 4.0
+                    kiosk_depth = 3.0
+
+                    for idx, (kx, ky) in enumerate(kiosk_centers):
+                        # Front glass wall for each kiosk (facing center)
+                        if ky > slab_cy:
+                            # North kiosks - front faces south
+                            front_y = ky - kiosk_depth / 2
+                            rotation = 0
+                        else:
+                            # South kiosks - front faces north
+                            front_y = ky + kiosk_depth / 2
+                            rotation = math.pi
+
+                        partition_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                        all_elements.append({
+                            'guid': partition_guid,
+                            'discipline': 'ARC',
+                            'ifc_class': 'IfcWall',
+                            'floor': floor_id,
+                            'center_x': kx,
+                            'center_y': front_y,
+                            'center_z': elevation,
+                            'rotation_z': rotation,
+                            'length': kiosk_width,
+                            'layer': f'GLASS_KIOSK_FRONT_{idx}',
+                            'source_file': 'building_config.json',
+                            'polyline_points': None,
+                            'glass_partition_config': {
+                                'thickness': glass_thickness,
+                                'height': glass_height,
+                                'length': kiosk_width,
+                                'material_rgba': glass_rgba
+                            }
+                        })
+                        partition_count += 1
+
+            print(f"  Generated {partition_count} glass partition wall panels")
+
         # Generate conduits for MEP routing (placeholder for future disciplines)
         if gen_options.get('generate_conduits', False):
             print("\nGenerating MEP conduits (placeholder)...")

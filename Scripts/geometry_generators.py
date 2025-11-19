@@ -692,8 +692,16 @@ def generate_element_geometry(elem: Dict, templates: Dict) -> GeometryResult:
                                             cx, cy, cz, rotation)
 
     elif ifc_class == 'IfcWall':
+        # Check for glass partition config (thin glass walls)
+        if 'glass_partition_config' in elem:
+            config = elem['glass_partition_config']
+            wall_length = config.get('length', length if length > 0 else 1.0)
+            thickness = config.get('thickness', 0.012)
+            wall_height = config.get('height', 2.4)
+            return OrientedBoxGenerator.generate(wall_length, thickness, wall_height,
+                                                cx, cy, cz, rotation)
         # Check if we have polyline points
-        if 'polyline_points' in elem and elem['polyline_points']:
+        elif 'polyline_points' in elem and elem['polyline_points']:
             thickness = params.get('thickness_m', 0.2)
             return ExtrudedPolylineGenerator.generate(elem['polyline_points'],
                                                      thickness, height, cz)
