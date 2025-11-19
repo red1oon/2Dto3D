@@ -952,12 +952,16 @@ def main():
             print("\nGenerating floor slabs...")
             floors_config = building_config.get('floors', {})
 
-            # Calculate building footprint from existing elements
-            if all_elements:
-                min_x = min(e['center_x'] for e in all_elements) - 5
-                max_x = max(e['center_x'] for e in all_elements) + 5
-                min_y = min(e['center_y'] for e in all_elements) - 5
-                max_y = max(e['center_y'] for e in all_elements) + 5
+            # Calculate building footprint from structural elements only (walls, columns)
+            # This avoids scattered plates/windows skewing the footprint
+            structural_elements = [e for e in all_elements
+                                   if e['ifc_class'] in ['IfcWall', 'IfcColumn', 'IfcBeam']]
+
+            if structural_elements:
+                min_x = min(e['center_x'] for e in structural_elements)
+                max_x = max(e['center_x'] for e in structural_elements)
+                min_y = min(e['center_y'] for e in structural_elements)
+                max_y = max(e['center_y'] for e in structural_elements)
 
                 slab_width = max_x - min_x
                 slab_depth = max_y - min_y
@@ -997,12 +1001,15 @@ def main():
 
                 print(f"  Generated {floor_count} floor slabs ({slab_width:.1f}m x {slab_depth:.1f}m)")
 
-        # Generate perimeter walls (default enclosure)
-        if gen_options.get('generate_perimeter_walls', True) and all_elements:
+        # Generate perimeter walls (default enclosure) - use structural footprint
+        if gen_options.get('generate_perimeter_walls', True) and structural_elements:
             print("\nGenerating perimeter walls...")
 
             wall_height = 3.5  # Default wall height
             wall_thickness = 0.2
+
+            # Use the structural-based bounds (not scattered plates)
+            # Note: min_x, max_x, min_y, max_y already calculated above from structural_elements
 
             # Create 4 perimeter walls (N, E, S, W)
             perimeter_walls = [
@@ -1126,6 +1133,382 @@ def main():
 
             print(f"  Generated 4 stairs (vertical circulation)")
 
+        # ====================================================================
+        # TRANSPORT HUB ELEMENTS - Glass facades, elevators, escalators
+        # ====================================================================
+
+        # Generate glass curtain walls on all facades (multi-floor)
+        if gen_options.get('generate_curtain_walls', True) and structural_elements:
+            print("\nGenerating glass curtain walls...")
+
+            glass_height = 3.0  # Height per floor
+            glass_depth = 0.1   # Glass thickness
+            panel_width = 3.0   # Width of each glass panel
+
+            floors_config = building_config.get('floors', {})
+            curtain_count = 0
+
+            for floor_id, floor_data in floors_config.items():
+                if floor_id == 'ROOF':
+                    continue
+
+                elevation = floor_data.get('elevation_m', 0.0)
+
+                # North facade panels
+                num_panels_ew = int(slab_width / panel_width)
+                for i in range(num_panels_ew):
+                    panel_x = min_x + panel_width/2 + i * panel_width
+                    if panel_x > max_x - panel_width/2:
+                        break
+
+                    cw_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': cw_guid,
+                        'discipline': 'ARC',
+                        'ifc_class': 'IfcCurtainWall',
+                        'floor': floor_id,
+                        'center_x': panel_x,
+                        'center_y': max_y,
+                        'center_z': elevation,
+                        'rotation_z': 0,
+                        'length': panel_width,
+                        'layer': f'CURTAIN_WALL_N_{floor_id}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None
+                    })
+                    curtain_count += 1
+
+                # South facade panels
+                for i in range(num_panels_ew):
+                    panel_x = min_x + panel_width/2 + i * panel_width
+                    if panel_x > max_x - panel_width/2:
+                        break
+
+                    cw_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': cw_guid,
+                        'discipline': 'ARC',
+                        'ifc_class': 'IfcCurtainWall',
+                        'floor': floor_id,
+                        'center_x': panel_x,
+                        'center_y': min_y,
+                        'center_z': elevation,
+                        'rotation_z': 0,
+                        'length': panel_width,
+                        'layer': f'CURTAIN_WALL_S_{floor_id}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None
+                    })
+                    curtain_count += 1
+
+                # East facade panels
+                num_panels_ns = int(slab_depth / panel_width)
+                for i in range(num_panels_ns):
+                    panel_y = min_y + panel_width/2 + i * panel_width
+                    if panel_y > max_y - panel_width/2:
+                        break
+
+                    cw_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': cw_guid,
+                        'discipline': 'ARC',
+                        'ifc_class': 'IfcCurtainWall',
+                        'floor': floor_id,
+                        'center_x': max_x,
+                        'center_y': panel_y,
+                        'center_z': elevation,
+                        'rotation_z': math.pi/2,
+                        'length': panel_width,
+                        'layer': f'CURTAIN_WALL_E_{floor_id}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None
+                    })
+                    curtain_count += 1
+
+                # West facade panels
+                for i in range(num_panels_ns):
+                    panel_y = min_y + panel_width/2 + i * panel_width
+                    if panel_y > max_y - panel_width/2:
+                        break
+
+                    cw_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': cw_guid,
+                        'discipline': 'ARC',
+                        'ifc_class': 'IfcCurtainWall',
+                        'floor': floor_id,
+                        'center_x': min_x,
+                        'center_y': panel_y,
+                        'center_z': elevation,
+                        'rotation_z': math.pi/2,
+                        'length': panel_width,
+                        'layer': f'CURTAIN_WALL_W_{floor_id}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None
+                    })
+                    curtain_count += 1
+
+            print(f"  Generated {curtain_count} glass curtain wall panels")
+
+        # Generate elevator shafts at building core
+        if gen_options.get('generate_elevators', True) and structural_elements:
+            print("\nGenerating elevator shafts...")
+
+            elevator_width = 2.5
+            elevator_depth = 2.5
+            shaft_height = 16.5  # Full building height
+
+            # 2 elevator shafts at core (center of building)
+            elevator_positions = [
+                {'pos': (slab_cx - 3, slab_cy), 'name': 'Elevator_1'},
+                {'pos': (slab_cx + 3, slab_cy), 'name': 'Elevator_2'},
+            ]
+
+            for elev in elevator_positions:
+                elev_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': elev_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcTransportElement',
+                    'floor': '1F',
+                    'center_x': elev['pos'][0],
+                    'center_y': elev['pos'][1],
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': elevator_width,
+                    'layer': f'ELEVATOR_{elev["name"].upper()}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'elevator_config': {
+                        'width': elevator_width,
+                        'depth': elevator_depth,
+                        'height': shaft_height
+                    }
+                })
+
+            print(f"  Generated 2 elevator shafts at building core")
+
+        # Generate escalators near main entrances
+        if gen_options.get('generate_escalators', True) and structural_elements:
+            print("\nGenerating escalators...")
+
+            escalator_width = 1.2
+            escalator_run = 8.0
+            escalator_rise = 4.0  # One floor height
+
+            # Escalators near N and S entrances (main passenger flow)
+            escalator_positions = [
+                {'pos': (slab_cx - 5, max_y - 10), 'name': 'North_Up', 'rotation': 0},
+                {'pos': (slab_cx + 5, max_y - 10), 'name': 'North_Down', 'rotation': math.pi},
+                {'pos': (slab_cx - 5, min_y + 10), 'name': 'South_Up', 'rotation': math.pi},
+                {'pos': (slab_cx + 5, min_y + 10), 'name': 'South_Down', 'rotation': 0},
+            ]
+
+            for esc in escalator_positions:
+                esc_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': esc_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcTransportElement',
+                    'floor': '1F',
+                    'center_x': esc['pos'][0],
+                    'center_y': esc['pos'][1],
+                    'center_z': 0.0,
+                    'rotation_z': esc['rotation'],
+                    'length': escalator_run,
+                    'layer': f'ESCALATOR_{esc["name"].upper()}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'escalator_config': {
+                        'width': escalator_width,
+                        'run': escalator_run,
+                        'rise': escalator_rise
+                    }
+                })
+
+            print(f"  Generated 4 escalators (passenger circulation)")
+
+        # ====================================================================
+        # INTERIOR ELEMENTS - Restrooms, counters, seating, retail
+        # ====================================================================
+
+        # Generate restroom blocks (4 per floor - NE, NW, SE, SW corners)
+        if gen_options.get('generate_restrooms', True) and structural_elements:
+            print("\nGenerating restroom blocks...")
+
+            restroom_width = 6.0
+            restroom_depth = 4.0
+            restroom_height = 3.0
+
+            floors_config = building_config.get('floors', {})
+            restroom_count = 0
+
+            for floor_id, floor_data in floors_config.items():
+                if floor_id == 'ROOF':
+                    continue
+
+                elevation = floor_data.get('elevation_m', 0.0)
+
+                # 4 restroom blocks per floor (corners, inset from perimeter)
+                restroom_positions = [
+                    {'pos': (min_x + 8, max_y - 8), 'name': f'Restroom_NW_{floor_id}'},
+                    {'pos': (max_x - 8, max_y - 8), 'name': f'Restroom_NE_{floor_id}'},
+                    {'pos': (min_x + 8, min_y + 8), 'name': f'Restroom_SW_{floor_id}'},
+                    {'pos': (max_x - 8, min_y + 8), 'name': f'Restroom_SE_{floor_id}'},
+                ]
+
+                for rr in restroom_positions:
+                    rr_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': rr_guid,
+                        'discipline': 'ARC',
+                        'ifc_class': 'IfcSpace',
+                        'floor': floor_id,
+                        'center_x': rr['pos'][0],
+                        'center_y': rr['pos'][1],
+                        'center_z': elevation,
+                        'rotation_z': 0,
+                        'length': restroom_width,
+                        'layer': f'RESTROOM_{rr["name"]}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None,
+                        'space_config': {
+                            'width': restroom_width,
+                            'depth': restroom_depth,
+                            'height': restroom_height
+                        }
+                    })
+                    restroom_count += 1
+
+            print(f"  Generated {restroom_count} restroom blocks")
+
+        # Generate check-in counters (ground floor only)
+        if gen_options.get('generate_counters', True) and structural_elements:
+            print("\nGenerating check-in counters...")
+
+            counter_width = 8.0
+            counter_depth = 1.5
+            counter_height = 1.1
+
+            # Row of counters near south entrance (departure area)
+            num_counters = 6
+            counter_spacing = 3.0
+            start_x = slab_cx - (num_counters - 1) * counter_spacing / 2
+
+            for i in range(num_counters):
+                counter_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': counter_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcFurniture',
+                    'floor': 'GF',
+                    'center_x': start_x + i * counter_spacing,
+                    'center_y': min_y + 15,
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': counter_width,
+                    'layer': f'COUNTER_{i+1}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'furniture_config': {
+                        'width': counter_width,
+                        'depth': counter_depth,
+                        'height': counter_height
+                    }
+                })
+
+            print(f"  Generated {num_counters} check-in counters")
+
+        # Generate seating areas (waiting lounges)
+        if gen_options.get('generate_seating', True) and structural_elements:
+            print("\nGenerating seating areas...")
+
+            seat_row_width = 10.0
+            seat_row_depth = 1.0
+            seat_height = 0.5
+
+            floors_config = building_config.get('floors', {})
+            seating_count = 0
+
+            for floor_id, floor_data in floors_config.items():
+                if floor_id in ['ROOF', '4F-6F']:  # Skip roof and upper mechanical floors
+                    continue
+
+                elevation = floor_data.get('elevation_m', 0.0)
+
+                # 2 seating rows per floor (east and west sides of central area)
+                seating_positions = [
+                    {'pos': (slab_cx - 12, slab_cy), 'name': f'Seating_W_{floor_id}'},
+                    {'pos': (slab_cx + 12, slab_cy), 'name': f'Seating_E_{floor_id}'},
+                ]
+
+                for seat in seating_positions:
+                    # Multiple rows of seats
+                    for row in range(3):
+                        seat_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                        all_elements.append({
+                            'guid': seat_guid,
+                            'discipline': 'ARC',
+                            'ifc_class': 'IfcFurniture',
+                            'floor': floor_id,
+                            'center_x': seat['pos'][0],
+                            'center_y': seat['pos'][1] + row * 2,
+                            'center_z': elevation,
+                            'rotation_z': 0,
+                            'length': seat_row_width,
+                            'layer': f'SEATING_{seat["name"]}_R{row}',
+                            'source_file': 'building_config.json',
+                            'polyline_points': None,
+                            'furniture_config': {
+                                'width': seat_row_width,
+                                'depth': seat_row_depth,
+                                'height': seat_height
+                            }
+                        })
+                        seating_count += 1
+
+            print(f"  Generated {seating_count} seating rows")
+
+        # Generate retail/F&B spaces (kiosks)
+        if gen_options.get('generate_retail', True) and structural_elements:
+            print("\nGenerating retail kiosks...")
+
+            kiosk_width = 4.0
+            kiosk_depth = 3.0
+            kiosk_height = 3.0
+
+            # Kiosks along main circulation corridor (1F only for now)
+            kiosk_positions = [
+                {'pos': (slab_cx - 15, slab_cy + 10), 'name': 'Retail_1'},
+                {'pos': (slab_cx + 15, slab_cy + 10), 'name': 'Retail_2'},
+                {'pos': (slab_cx - 15, slab_cy - 10), 'name': 'FnB_1'},
+                {'pos': (slab_cx + 15, slab_cy - 10), 'name': 'FnB_2'},
+            ]
+
+            for kiosk in kiosk_positions:
+                kiosk_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': kiosk_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcSpace',
+                    'floor': '1F',
+                    'center_x': kiosk['pos'][0],
+                    'center_y': kiosk['pos'][1],
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': kiosk_width,
+                    'layer': f'KIOSK_{kiosk["name"]}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'space_config': {
+                        'width': kiosk_width,
+                        'depth': kiosk_depth,
+                        'height': kiosk_height
+                    }
+                })
+
+            print(f"  Generated {len(kiosk_positions)} retail/F&B kiosks")
+
         # Generate conduits for MEP routing (placeholder for future disciplines)
         if gen_options.get('generate_conduits', False):
             print("\nGenerating MEP conduits (placeholder)...")
@@ -1134,7 +1517,7 @@ def main():
             # - Horizontal runs along corridors
             # - Connection points at floor levels
 
-    print(f"\nTotal elements (with dome, slabs, perimeter, doors): {len(all_elements)}")
+    print(f"\nTotal elements (with interior fit-out): {len(all_elements)}")
 
     # Insert elements into database
     print("\nPopulating database...")

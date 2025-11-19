@@ -581,6 +581,56 @@ def generate_element_geometry(elem: Dict, templates: Dict) -> GeometryResult:
         v_segments = dome_config.get('segments_vertical', 16)
         return DomeGenerator.generate(radius, dome_height, cx, cy, cz, h_segments, v_segments)
 
+    elif ifc_class == 'IfcCurtainWall':
+        # Glass curtain wall panels - oriented box
+        panel_width = params.get('width_m', 3.0)
+        panel_depth = params.get('depth_m', 0.1)
+        panel_height = params.get('height_m', 3.0)
+        return OrientedBoxGenerator.generate(panel_width, panel_depth, panel_height,
+                                            cx, cy, cz, rotation)
+
+    elif ifc_class == 'IfcTransportElement':
+        # Elevators and escalators
+        if 'elevator_config' in elem:
+            # Elevator shaft - full height box
+            config = elem['elevator_config']
+            return BoxGenerator.generate(
+                config['width'], config['depth'], config['height'],
+                cx, cy, cz
+            )
+        elif 'escalator_config' in elem:
+            # Escalator - oriented sloped box
+            config = elem['escalator_config']
+            return OrientedBoxGenerator.generate(
+                config['run'], config['width'], config['rise'],
+                cx, cy, cz, rotation
+            )
+        else:
+            # Default transport element
+            return BoxGenerator.generate(width, depth, height, cx, cy, cz)
+
+    elif ifc_class == 'IfcSpace':
+        # Interior spaces (restrooms, kiosks, etc.)
+        if 'space_config' in elem:
+            config = elem['space_config']
+            return BoxGenerator.generate(
+                config['width'], config['depth'], config['height'],
+                cx, cy, cz
+            )
+        else:
+            return BoxGenerator.generate(width, depth, height, cx, cy, cz)
+
+    elif ifc_class == 'IfcFurniture':
+        # Furniture elements (counters, seating)
+        if 'furniture_config' in elem:
+            config = elem['furniture_config']
+            return BoxGenerator.generate(
+                config['width'], config['depth'], config['height'],
+                cx, cy, cz
+            )
+        else:
+            return BoxGenerator.generate(width, depth, height, cx, cy, cz)
+
     else:
         # Default: axis-aligned box
         elem_width = length if length > 0 else width
