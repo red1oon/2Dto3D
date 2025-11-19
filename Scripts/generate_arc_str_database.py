@@ -1474,9 +1474,9 @@ def main():
         if gen_options.get('generate_restrooms', True) and structural_elements:
             print("\nGenerating drinking fountains...")
 
-            fountain_width = 0.4
-            fountain_depth = 0.3
-            fountain_height = 0.9  # Accessible height
+            fountain_width = 0.8   # Scaled up for visibility
+            fountain_depth = 0.6
+            fountain_height = 1.0  # Accessible height
 
             floors_config = building_config.get('floors', {})
             fountain_count = 0
@@ -1522,9 +1522,9 @@ def main():
         if gen_options.get('generate_restrooms', True) and structural_elements:
             print("\nGenerating waste bins...")
 
-            bin_width = 0.5
-            bin_depth = 0.5
-            bin_height = 1.0
+            bin_width = 0.8   # Scaled up for visibility
+            bin_depth = 0.8
+            bin_height = 1.2
 
             floors_config = building_config.get('floors', {})
             bin_count = 0
