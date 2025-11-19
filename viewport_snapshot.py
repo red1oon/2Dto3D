@@ -486,7 +486,7 @@ class DatabaseGeometryLoader:
 
 
 def render_database(db_path: str, output_path: str = None,
-                    angle: str = 'iso', distance: float = 1.5,
+                    angle: str = 'iso', distance: float = 1.0,
                     resolution: tuple = (1920, 1080),
                     surface_only: bool = False,
                     disciplines: list = None,
@@ -582,8 +582,8 @@ def main():
     parser.add_argument(
         "--distance", "-d",
         type=float,
-        default=1.5,
-        help="Camera distance multiplier (default: 1.5)"
+        default=1.0,
+        help="Camera distance multiplier (default: 1.0)"
     )
     parser.add_argument(
         "--resolution", "-r",

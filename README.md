@@ -62,7 +62,7 @@ python3 -m venv venv
 | Option | Short | Description | Default |
 |--------|-------|-------------|---------|
 | `--angle` | `-a` | Camera preset: iso, top, front, side, se | iso |
-| `--distance` | `-d` | Camera distance multiplier (zoom) | 1.5 |
+| `--distance` | `-d` | Camera distance multiplier (zoom) | 1.0 |
 | `--resolution` | `-r` | Output resolution WxH | 1920x1080 |
 | `--output` | `-o` | Output file path | Auto-generated |
 | `--surface-only` | `-s` | Only surface elements | False |
