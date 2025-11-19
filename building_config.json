@@ -113,13 +113,13 @@
     "enabled": true,
     "center_x_m": 0.0,
     "center_y_m": -10.0,
-    "base_elevation_m": 12.5,
-    "radius_m": 6.0,
-    "height_m": 4.0,
+    "base_elevation_m": 17.0,
+    "radius_m": 8.0,
+    "height_m": 5.0,
     "segments_horizontal": 32,
     "segments_vertical": 16,
     "material": "steel",
-    "note": "Dome arcs in Y=200-300k mm region in DXF - scaled to match ORIGINAL_IFC proportions"
+    "note": "Iconic dome at roof center - prominent feature of terminal"
   },
 
   "roof": {

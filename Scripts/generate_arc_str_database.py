@@ -1338,17 +1338,59 @@ def main():
         # TRANSPORT HUB ELEMENTS - Glass facades, elevators, escalators
         # ====================================================================
 
-        # Generate rooftop mechanical equipment (ROOF level)
+        # Generate slanted roof panels (pitched roof around dome)
+        if gen_options.get('generate_curtain_walls', True) and structural_elements:
+            print("\nGenerating slanted roof panels...")
+
+            roof_base_z = 16.0  # Base of roof
+            roof_peak_z = 18.0  # Ridge height
+            roof_panel_count = 0
+
+            # Pitched roof panels on north and south sides
+            # These slope down from center ridge to edges
+            roof_panels = [
+                # North slope (from center to north edge)
+                {'cx': slab_cx, 'cy': slab_cy + slab_depth/4, 'w': slab_width * 0.9, 'd': slab_depth/2 - 8, 'z': roof_base_z + 1.0, 'name': 'Roof_N'},
+                # South slope (from center to south edge)
+                {'cx': slab_cx, 'cy': slab_cy - slab_depth/4, 'w': slab_width * 0.9, 'd': slab_depth/2 - 8, 'z': roof_base_z + 1.0, 'name': 'Roof_S'},
+            ]
+
+            for panel in roof_panels:
+                roof_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': roof_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcSlab',  # Roof slab
+                    'floor': 'ROOF',
+                    'center_x': panel['cx'],
+                    'center_y': panel['cy'],
+                    'center_z': panel['z'],
+                    'rotation_z': 0,
+                    'length': panel['w'],
+                    'layer': f'ROOF_{panel["name"]}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'slab_config': {
+                        'width': panel['w'],
+                        'depth': panel['d'],
+                        'thickness': 0.2
+                    }
+                })
+                roof_panel_count += 1
+
+            print(f"  Generated {roof_panel_count} slanted roof panels")
+
+        # Generate rooftop mechanical equipment (ROOF level - away from dome)
         if gen_options.get('generate_curtain_walls', True) and structural_elements:
             print("\nGenerating rooftop equipment...")
 
             roof_z = 16.0  # Top of 4F-6F
             equip_count = 0
 
-            # HVAC Chillers (large units)
+            # HVAC Chillers (large units) - positioned at corners away from dome
             chiller_positions = [
-                {'pos': (slab_cx - 12, slab_cy + 15), 'name': 'Chiller_1', 'size': (4.0, 2.5, 2.0)},
-                {'pos': (slab_cx + 12, slab_cy + 15), 'name': 'Chiller_2', 'size': (4.0, 2.5, 2.0)},
+                {'pos': (slab_cx - 15, slab_cy + 18), 'name': 'Chiller_1', 'size': (4.0, 2.5, 2.0)},
+                {'pos': (slab_cx + 15, slab_cy + 18), 'name': 'Chiller_2', 'size': (4.0, 2.5, 2.0)},
             ]
 
             for chiller in chiller_positions:
