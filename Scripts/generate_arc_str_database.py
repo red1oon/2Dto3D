@@ -1480,6 +1480,56 @@ def main():
 
             print(f"  Generated {fountain_count} drinking fountains")
 
+        # Generate trash/recycling bins (near seating and food areas)
+        if gen_options.get('generate_restrooms', True) and structural_elements:
+            print("\nGenerating waste bins...")
+
+            bin_width = 0.5
+            bin_depth = 0.5
+            bin_height = 1.0
+
+            floors_config = building_config.get('floors', {})
+            bin_count = 0
+
+            for floor_id, floor_data in floors_config.items():
+                if floor_id == 'ROOF':
+                    continue
+
+                elevation = floor_data.get('elevation_m', 0.0)
+
+                # Bins at strategic locations (4 per floor)
+                bin_positions = [
+                    {'pos': (slab_cx - 15, slab_cy + 5), 'name': f'Bin_NW_{floor_id}'},
+                    {'pos': (slab_cx + 15, slab_cy + 5), 'name': f'Bin_NE_{floor_id}'},
+                    {'pos': (slab_cx - 15, slab_cy - 5), 'name': f'Bin_SW_{floor_id}'},
+                    {'pos': (slab_cx + 15, slab_cy - 5), 'name': f'Bin_SE_{floor_id}'},
+                ]
+
+                for bin_loc in bin_positions:
+                    bin_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': bin_guid,
+                        'discipline': 'ARC',
+                        'ifc_class': 'IfcFurniture',
+                        'floor': floor_id,
+                        'center_x': bin_loc['pos'][0],
+                        'center_y': bin_loc['pos'][1],
+                        'center_z': elevation,
+                        'rotation_z': 0,
+                        'length': bin_width,
+                        'layer': f'WASTE_{bin_loc["name"]}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None,
+                        'furniture_config': {
+                            'width': bin_width,
+                            'depth': bin_depth,
+                            'height': bin_height
+                        }
+                    })
+                    bin_count += 1
+
+            print(f"  Generated {bin_count} waste bins")
+
         # Generate seating areas (waiting lounges)
         if gen_options.get('generate_seating', True) and structural_elements:
             print("\nGenerating seating areas...")
@@ -1569,6 +1619,44 @@ def main():
                 })
 
             print(f"  Generated {len(kiosk_positions)} retail/F&B kiosks")
+
+        # Generate luggage cart corrals (GF only - transit hub amenity)
+        if gen_options.get('generate_retail', True) and structural_elements:
+            print("\nGenerating luggage cart areas...")
+
+            cart_area_width = 3.0
+            cart_area_depth = 2.0
+            cart_area_height = 1.2  # Low rail enclosure
+
+            # Cart corrals near entrances
+            cart_positions = [
+                {'pos': (min_x + 8, slab_cy - 5), 'name': 'CartCorral_W'},
+                {'pos': (max_x - 8, slab_cy - 5), 'name': 'CartCorral_E'},
+            ]
+
+            for cart in cart_positions:
+                cart_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                all_elements.append({
+                    'guid': cart_guid,
+                    'discipline': 'ARC',
+                    'ifc_class': 'IfcFurniture',
+                    'floor': 'GF',
+                    'center_x': cart['pos'][0],
+                    'center_y': cart['pos'][1],
+                    'center_z': 0.0,
+                    'rotation_z': 0,
+                    'length': cart_area_width,
+                    'layer': f'CART_{cart["name"]}',
+                    'source_file': 'building_config.json',
+                    'polyline_points': None,
+                    'furniture_config': {
+                        'width': cart_area_width,
+                        'depth': cart_area_depth,
+                        'height': cart_area_height
+                    }
+                })
+
+            print(f"  Generated {len(cart_positions)} luggage cart areas")
 
         # Generate information kiosks and departure boards (wayfinding)
         if gen_options.get('generate_retail', True) and structural_elements:
