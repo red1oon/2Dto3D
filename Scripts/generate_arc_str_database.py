@@ -1855,6 +1855,32 @@ def main():
                             }
                         })
 
+                    # Floor drains (2 per restroom - near toilets and basins)
+                    drain_positions = [
+                        (rr_x, rr_y + 0.5),      # Center near toilets
+                        (rr_x, rr_y - 2.0),     # Near basin area
+                    ]
+                    for i, (dx, dy) in enumerate(drain_positions):
+                        drain_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                        all_elements.append({
+                            'guid': drain_guid,
+                            'discipline': 'ARC',
+                            'ifc_class': 'IfcFlowTerminal',
+                            'floor': floor_id,
+                            'center_x': dx,
+                            'center_y': dy,
+                            'center_z': elevation - 0.02,  # Slightly below floor
+                            'rotation_z': 0,
+                            'length': 0.15,
+                            'layer': f'FLOOR_DRAIN_{rr["name"]}_{i}',
+                            'source_file': 'building_config.json',
+                            'polyline_points': None,
+                            'sanitary_config': {
+                                'type': 'floor_trap',
+                                'diameter': 0.15
+                            }
+                        })
+
             print(f"  Generated {restroom_count} restroom blocks with fixtures (MS 1184 compliant)")
 
         # Generate check-in/ticketing counters (ground floor only)

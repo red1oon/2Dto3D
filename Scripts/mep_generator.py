@@ -640,6 +640,63 @@ class ELECGenerator(DisciplineGenerator):
                     }
                 })
 
+            # Exit signs (illuminated, above exits)
+            exit_sign_positions = [
+                (min_x + 2, slab_cy),   # West exit
+                (max_x - 2, slab_cy),   # East exit
+                (slab_cx, min_y + 2),   # South exit
+                (slab_cx, max_y - 2),   # North exit
+                # Internal circulation exits
+                (slab_cx - 10, slab_cy),
+                (slab_cx + 10, slab_cy),
+            ]
+            for ex_x, ex_y in exit_sign_positions:
+                elements.append({
+                    'guid': self._create_guid(),
+                    'discipline': 'ELEC',
+                    'ifc_class': 'IfcLightFixture',
+                    'floor': floor_id,
+                    'center_x': ex_x,
+                    'center_y': ex_y,
+                    'center_z': elevation + 2.5,  # Above door height
+                    'rotation_z': 0,
+                    'length': 0.3,
+                    'layer': f'EXIT_SIGN_{floor_id}',
+                    'source_file': 'zones_config.json',
+                    'polyline_points': None,
+                    'exit_sign_config': {
+                        'width': 0.3,
+                        'height': 0.15,
+                        'illuminated': True
+                    }
+                })
+
+            # Emergency lights (battery backup, along escape routes)
+            emergency_spacing = 8.0
+            # Along main corridors
+            for corr_y in [slab_cy - 8, slab_cy, slab_cy + 8]:
+                x_pos = min_x + 5
+                while x_pos <= max_x - 5:
+                    elements.append({
+                        'guid': self._create_guid(),
+                        'discipline': 'ELEC',
+                        'ifc_class': 'IfcLightFixture',
+                        'floor': floor_id,
+                        'center_x': x_pos,
+                        'center_y': corr_y,
+                        'center_z': ceiling_z - 0.1,
+                        'rotation_z': 0,
+                        'length': 0.3,
+                        'layer': f'EMERGENCY_LIGHT_{floor_id}',
+                        'source_file': 'zones_config.json',
+                        'polyline_points': None,
+                        'emergency_config': {
+                            'type': 'twin_spot',
+                            'battery_backup': True
+                        }
+                    })
+                    x_pos += emergency_spacing
+
         return elements
 
 
