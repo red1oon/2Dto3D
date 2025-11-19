@@ -50,6 +50,18 @@ except ImportError:
     print("ERROR: ezdxf not installed. Run: pip install ezdxf")
     sys.exit(1)
 
+# Import geometry generators
+from geometry_generators import (
+    generate_element_geometry,
+    GeometryResult,
+    BoxGenerator,
+    OrientedBoxGenerator,
+    CylinderGenerator,
+    ExtrudedPolylineGenerator,
+    SlabGenerator,
+    compute_face_normal
+)
+
 # ============================================================================
 # PATHS
 # ============================================================================
@@ -133,6 +145,164 @@ def generate_box_at_position(width: float, depth: float, height: float,
         (0, 3, 7), (0, 7, 4),  # Left
         (1, 5, 6), (1, 6, 2),  # Right
     ]
+    normals = [compute_face_normal(vertices[f[0]], vertices[f[1]], vertices[f[2]]) for f in faces]
+    return vertices, faces, normals
+
+def generate_oriented_box(length: float, width: float, height: float,
+                          cx: float, cy: float, cz: float, rotation: float) -> Tuple[List, List, List]:
+    """Generate box geometry oriented along rotation angle at world position."""
+    # Half dimensions
+    hl, hw = length/2, width/2
+
+    # Rotation matrix components
+    cos_r = math.cos(rotation)
+    sin_r = math.sin(rotation)
+
+    # Local corners (length along X, width along Y)
+    local_corners = [
+        (-hl, -hw), (hl, -hw), (hl, hw), (-hl, hw)
+    ]
+
+    # Transform to world coordinates
+    vertices = []
+    for lx, ly in local_corners:
+        wx = cx + lx * cos_r - ly * sin_r
+        wy = cy + lx * sin_r + ly * cos_r
+        vertices.append((wx, wy, cz))
+    for lx, ly in local_corners:
+        wx = cx + lx * cos_r - ly * sin_r
+        wy = cy + lx * sin_r + ly * cos_r
+        vertices.append((wx, wy, cz + height))
+
+    faces = [
+        (0, 1, 2), (0, 2, 3),  # Bottom
+        (4, 7, 6), (4, 6, 5),  # Top
+        (0, 4, 5), (0, 5, 1),  # Front
+        (2, 6, 7), (2, 7, 3),  # Back
+        (0, 3, 7), (0, 7, 4),  # Left
+        (1, 5, 6), (1, 6, 2),  # Right
+    ]
+    normals = [compute_face_normal(vertices[f[0]], vertices[f[1]], vertices[f[2]]) for f in faces]
+    return vertices, faces, normals
+
+def generate_cylinder_at_position(radius: float, height: float,
+                                   cx: float, cy: float, cz: float,
+                                   segments: int = 12) -> Tuple[List, List, List]:
+    """Generate cylinder geometry at world position."""
+    vertices = [(cx, cy, cz)]  # Bottom center
+    for i in range(segments):
+        angle = 2 * math.pi * i / segments
+        vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle), cz))
+
+    vertices.append((cx, cy, cz + height))  # Top center
+    for i in range(segments):
+        angle = 2 * math.pi * i / segments
+        vertices.append((cx + radius * math.cos(angle), cy + radius * math.sin(angle), cz + height))
+
+    faces = []
+    # Bottom cap
+    for i in range(segments):
+        faces.append((0, 1 + (i + 1) % segments, 1 + i))
+    # Top cap
+    top_center = segments + 1
+    for i in range(segments):
+        faces.append((top_center, top_center + 1 + i, top_center + 1 + (i + 1) % segments))
+    # Side faces
+    for i in range(segments):
+        b1 = 1 + i
+        b2 = 1 + (i + 1) % segments
+        t1 = top_center + 1 + i
+        t2 = top_center + 1 + (i + 1) % segments
+        faces.append((b1, b2, t2))
+        faces.append((b1, t2, t1))
+
+    normals = [compute_face_normal(vertices[f[0]], vertices[f[1]], vertices[f[2]]) for f in faces]
+    return vertices, faces, normals
+
+def generate_extruded_polyline(points: List[Tuple[float, float]], thickness: float, height: float,
+                                cz: float) -> Tuple[List, List, List]:
+    """
+    Generate extruded wall geometry from polyline points.
+    Creates a 3D wall by offsetting polyline inward/outward by thickness/2.
+    """
+    if len(points) < 2:
+        # Fallback to box
+        return generate_box_at_position(1.0, thickness, height, points[0][0], points[0][1], cz)
+
+    # Calculate offset polyline (simplified - perpendicular offset)
+    vertices = []
+    n = len(points)
+
+    # For each point, calculate perpendicular direction
+    for i in range(n):
+        p0 = points[i]
+
+        # Get direction vectors
+        if i == 0:
+            dx = points[1][0] - points[0][0]
+            dy = points[1][1] - points[0][1]
+        elif i == n - 1:
+            dx = points[n-1][0] - points[n-2][0]
+            dy = points[n-1][1] - points[n-2][1]
+        else:
+            dx = points[i+1][0] - points[i-1][0]
+            dy = points[i+1][1] - points[i-1][1]
+
+        # Normalize and get perpendicular
+        length = math.sqrt(dx*dx + dy*dy)
+        if length > 0.001:
+            nx, ny = -dy/length, dx/length
+        else:
+            nx, ny = 0, 1
+
+        # Offset points
+        ht = thickness / 2
+        vertices.append((p0[0] + nx*ht, p0[1] + ny*ht, cz))
+        vertices.append((p0[0] - nx*ht, p0[1] - ny*ht, cz))
+
+    # Add top vertices
+    bottom_count = len(vertices)
+    for v in vertices[:bottom_count]:
+        vertices.append((v[0], v[1], cz + height))
+
+    faces = []
+    # Bottom and top caps (triangulate)
+    for i in range(n - 1):
+        # Bottom quad (two triangles)
+        b0, b1 = i*2, i*2 + 1
+        b2, b3 = (i+1)*2, (i+1)*2 + 1
+        faces.append((b0, b2, b1))
+        faces.append((b1, b2, b3))
+
+        # Top quad
+        t0, t1 = bottom_count + b0, bottom_count + b1
+        t2, t3 = bottom_count + b2, bottom_count + b3
+        faces.append((t0, t1, t2))
+        faces.append((t1, t3, t2))
+
+    # Side faces
+    for i in range(n - 1):
+        # Outer side
+        b0, b2 = i*2, (i+1)*2
+        t0, t2 = bottom_count + b0, bottom_count + b2
+        faces.append((b0, t0, t2))
+        faces.append((b0, t2, b2))
+
+        # Inner side
+        b1, b3 = i*2 + 1, (i+1)*2 + 1
+        t1, t3 = bottom_count + b1, bottom_count + b3
+        faces.append((b1, b3, t3))
+        faces.append((b1, t3, t1))
+
+    # End caps
+    # Start cap
+    faces.append((0, 1, bottom_count + 1))
+    faces.append((0, bottom_count + 1, bottom_count))
+    # End cap
+    e0, e1 = (n-1)*2, (n-1)*2 + 1
+    faces.append((e0, bottom_count + e0, bottom_count + e1))
+    faces.append((e0, bottom_count + e1, e1))
+
     normals = [compute_face_normal(vertices[f[0]], vertices[f[1]], vertices[f[2]]) for f in faces]
     return vertices, faces, normals
 
@@ -391,6 +561,7 @@ def extract_dxf_entities(dxf_path: Path, discipline: str, floor: str,
         x, y, z = 0, 0, 0
         length = 0
         rotation = 0
+        polyline_points_raw = None  # For LWPOLYLINE walls
 
         if entity.dxftype() == 'CIRCLE':
             x, y = entity.dxf.center.x, entity.dxf.center.y
@@ -416,6 +587,8 @@ def extract_dxf_entities(dxf_path: Path, discipline: str, floor: str,
                 for i in range(len(points) - 1):
                     length += math.sqrt((points[i+1][0] - points[i][0])**2 +
                                        (points[i+1][1] - points[i][1])**2)
+                # Store polyline points for wall extrusion (will be transformed later)
+                polyline_points_raw = points
 
         elif entity.dxftype() == 'INSERT':
             x, y = entity.dxf.insert.x, entity.dxf.insert.y
@@ -444,9 +617,21 @@ def extract_dxf_entities(dxf_path: Path, discipline: str, floor: str,
         if discipline == 'ARC':
             x_final = x_rot - 68.9
             y_final = y_rot + 1598.6
+            offset_x, offset_y = -68.9, 1598.6
         else:  # STR - all floors have same coordinate system in extracted files
             x_final = x_rot - 35.7
             y_final = y_rot - 44.5
+            offset_x, offset_y = -35.7, -44.5
+
+        # Transform polyline points if present
+        polyline_points_transformed = None
+        if polyline_points_raw:
+            polyline_points_transformed = []
+            for px, py in polyline_points_raw:
+                # Convert mm to m, apply rotation, apply offset
+                px_m, py_m = px / 1000.0, py / 1000.0
+                px_rot, py_rot = apply_rotation_transform(px_m, py_m)
+                polyline_points_transformed.append((px_rot + offset_x, py_rot + offset_y))
 
         # Generate GUID
         guid = str(uuid.uuid4()).replace('-', '')[:22]
@@ -462,7 +647,8 @@ def extract_dxf_entities(dxf_path: Path, discipline: str, floor: str,
             'rotation_z': rotation,
             'length': length_m,
             'layer': layer_raw,
-            'source_file': dxf_path.name
+            'source_file': dxf_path.name,
+            'polyline_points': polyline_points_transformed
         })
 
     return elements
@@ -569,18 +755,9 @@ def main():
         material_name = material_info.get('name', 'Default')
         material_rgba = json.dumps(material_info.get('rgba', [0.7, 0.7, 0.7, 1.0]))
 
-        # Get dimensions
-        width = params.get('width_m', params.get('thickness_m', 0.5))
-        depth = params.get('depth_m', width)
-        height = params.get('height_m', 3.0)
-
-        # Use length from DXF if available (for walls, beams)
-        if elem['length'] and elem['length'] > 0:
-            width = max(width, elem['length'])
-
-        # Generate geometry at world position
-        cx, cy, cz = elem['center_x'], elem['center_y'], elem['center_z']
-        vertices, faces, normals = generate_box_at_position(width, depth, height, cx, cy, cz)
+        # Generate geometry using factory function (handles all element types)
+        geom_result = generate_element_geometry(elem, templates)
+        vertices, faces, normals = geom_result.vertices, geom_result.faces, geom_result.normals
 
         # Pack and hash
         v_blob = pack_vertices(vertices)
@@ -623,8 +800,13 @@ def main():
             VALUES (?, ?, ?)
         """, (guid, 'Terminal 1', elem['floor']))
 
-        # Calculate bounding box half-sizes (width, depth, height already calculated above)
-        hw, hd = width / 2, depth / 2
+        # Calculate bounding box from actual vertices
+        xs = [v[0] for v in vertices]
+        ys = [v[1] for v in vertices]
+        zs = [v[2] for v in vertices]
+        minX, maxX = min(xs), max(xs)
+        minY, maxY = min(ys), max(ys)
+        minZ, maxZ = min(zs), max(zs)
 
         # Get row id from elements_meta for rtree
         cursor.execute("SELECT id FROM elements_meta WHERE guid = ?", (guid,))
@@ -634,7 +816,7 @@ def main():
         cursor.execute("""
             INSERT INTO elements_rtree (id, minX, maxX, minY, maxY, minZ, maxZ)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (row_id, cx - hw, cx + hw, cy - hd, cy + hd, cz, cz + height))
+        """, (row_id, minX, maxX, minY, maxY, minZ, maxZ))
 
         # Track stats
         ifc_class = elem['ifc_class']
