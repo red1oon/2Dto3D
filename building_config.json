@@ -191,9 +191,49 @@
     "generate_seating": true,
     "generate_retail": true,
     "generate_conduits": false,
+    "generate_fire_protection": true,
+    "generate_electrical": true,
     "apply_materials": true,
     "cylinder_segments": 12,
     "dome_segments": 32
+  },
+
+  "mep_config": {
+    "fire_protection": {
+      "discipline": "FP",
+      "color_rgba": [1.0, 0.2, 0.2, 1.0],
+      "sprinkler": {
+        "spacing_m": 3.5,
+        "coverage_sqm": 12.08,
+        "head_radius_m": 0.025,
+        "head_length_m": 0.08,
+        "z_offset_from_ceiling_m": -0.3
+      },
+      "pipe": {
+        "main_radius_m": 0.05,
+        "branch_radius_m": 0.025,
+        "z_offset_from_ceiling_m": -0.5
+      }
+    },
+    "electrical": {
+      "discipline": "ELEC",
+      "color_rgba": [1.0, 0.9, 0.2, 1.0],
+      "light_fixture": {
+        "spacing_m": 4.0,
+        "coverage_sqm": 16.0,
+        "width_m": 0.6,
+        "depth_m": 0.6,
+        "thickness_m": 0.05,
+        "z_offset_from_ceiling_m": -0.5
+      },
+      "conduit": {
+        "main_width_m": 0.15,
+        "main_height_m": 0.08,
+        "branch_width_m": 0.1,
+        "branch_height_m": 0.05,
+        "z_offset_from_ceiling_m": -0.7
+      }
+    }
   },
 
   "validation": {

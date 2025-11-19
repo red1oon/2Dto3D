@@ -1517,6 +1517,256 @@ def main():
             # - Horizontal runs along corridors
             # - Connection points at floor levels
 
+        # ====================================================================
+        # FIRE PROTECTION (FP) - Sprinklers and pipes
+        # ====================================================================
+        if gen_options.get('generate_fire_protection', False) and structural_elements:
+            print("\nGenerating Fire Protection elements...")
+
+            mep_config = building_config.get('mep_config', {})
+            fp_config = mep_config.get('fire_protection', {})
+            sprinkler_config = fp_config.get('sprinkler', {})
+            pipe_config = fp_config.get('pipe', {})
+
+            spacing = sprinkler_config.get('spacing_m', 3.5)
+            z_offset = sprinkler_config.get('z_offset_from_ceiling_m', -0.3)
+
+            floors_config = building_config.get('floors', {})
+            sprinkler_count = 0
+            pipe_count = 0
+
+            # Calculate usable area (avoiding restroom corners)
+            margin = 10.0  # Stay away from corners where restrooms are
+
+            for floor_id, floor_data in floors_config.items():
+                if floor_id == 'ROOF':
+                    continue
+
+                elevation = floor_data.get('elevation_m', 0.0)
+                floor_height = floor_data.get('floor_to_floor_m', 4.0)
+                ceiling_z = elevation + floor_height + z_offset
+
+                # Grid of sprinklers with margin from edges
+                usable_min_x = min_x + margin
+                usable_max_x = max_x - margin
+                usable_min_y = min_y + margin
+                usable_max_y = max_y - margin
+
+                # Generate sprinkler grid
+                y = usable_min_y
+                row_heads = []
+                while y <= usable_max_y:
+                    x = usable_min_x
+                    row = []
+                    while x <= usable_max_x:
+                        sprinkler_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                        all_elements.append({
+                            'guid': sprinkler_guid,
+                            'discipline': 'FP',
+                            'ifc_class': 'IfcFireSuppressionTerminal',
+                            'floor': floor_id,
+                            'center_x': x,
+                            'center_y': y,
+                            'center_z': ceiling_z,
+                            'rotation_z': 0,
+                            'length': 0.05,
+                            'layer': f'SPRINKLER_{floor_id}',
+                            'source_file': 'building_config.json',
+                            'polyline_points': None,
+                            'sprinkler_config': {
+                                'head_radius': sprinkler_config.get('head_radius_m', 0.025),
+                                'head_length': sprinkler_config.get('head_length_m', 0.08)
+                            }
+                        })
+                        row.append((x, y))
+                        sprinkler_count += 1
+                        x += spacing
+                    row_heads.append(row)
+                    y += spacing
+
+                # Generate pipe network connecting sprinklers
+                pipe_z = elevation + floor_height + pipe_config.get('z_offset_from_ceiling_m', -0.5)
+
+                # Main pipe runs along Y axis (center of building)
+                main_x = slab_cx
+                if row_heads:
+                    # Main vertical run
+                    main_length = usable_max_y - usable_min_y
+                    main_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': main_guid,
+                        'discipline': 'FP',
+                        'ifc_class': 'IfcPipeSegment',
+                        'floor': floor_id,
+                        'center_x': main_x,
+                        'center_y': slab_cy,
+                        'center_z': pipe_z,
+                        'rotation_z': math.pi/2,  # Along Y axis
+                        'length': main_length,
+                        'layer': f'FP_MAIN_{floor_id}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None,
+                        'pipe_config': {
+                            'radius': pipe_config.get('main_radius_m', 0.05),
+                            'length': main_length
+                        }
+                    })
+                    pipe_count += 1
+
+                    # Branch pipes for each row
+                    for row in row_heads:
+                        if len(row) > 0:
+                            row_y = row[0][1]
+                            branch_length = (usable_max_x - usable_min_x)
+                            branch_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                            all_elements.append({
+                                'guid': branch_guid,
+                                'discipline': 'FP',
+                                'ifc_class': 'IfcPipeSegment',
+                                'floor': floor_id,
+                                'center_x': slab_cx,
+                                'center_y': row_y,
+                                'center_z': pipe_z,
+                                'rotation_z': 0,  # Along X axis
+                                'length': branch_length,
+                                'layer': f'FP_BRANCH_{floor_id}',
+                                'source_file': 'building_config.json',
+                                'polyline_points': None,
+                                'pipe_config': {
+                                    'radius': pipe_config.get('branch_radius_m', 0.025),
+                                    'length': branch_length
+                                }
+                            })
+                            pipe_count += 1
+
+            print(f"  Generated {sprinkler_count} sprinklers + {pipe_count} pipe segments")
+
+        # ====================================================================
+        # ELECTRICAL (ELEC) - Light fixtures and conduits
+        # ====================================================================
+        if gen_options.get('generate_electrical', False) and structural_elements:
+            print("\nGenerating Electrical elements...")
+
+            mep_config = building_config.get('mep_config', {})
+            elec_config = mep_config.get('electrical', {})
+            light_config = elec_config.get('light_fixture', {})
+            conduit_config = elec_config.get('conduit', {})
+
+            spacing = light_config.get('spacing_m', 4.0)
+            z_offset = light_config.get('z_offset_from_ceiling_m', -0.5)
+
+            floors_config = building_config.get('floors', {})
+            light_count = 0
+            conduit_count = 0
+
+            # Calculate usable area (avoiding restroom corners)
+            margin = 10.0
+
+            for floor_id, floor_data in floors_config.items():
+                if floor_id == 'ROOF':
+                    continue
+
+                elevation = floor_data.get('elevation_m', 0.0)
+                floor_height = floor_data.get('floor_to_floor_m', 4.0)
+                ceiling_z = elevation + floor_height + z_offset
+
+                # Grid of light fixtures with margin from edges
+                usable_min_x = min_x + margin
+                usable_max_x = max_x - margin
+                usable_min_y = min_y + margin
+                usable_max_y = max_y - margin
+
+                # Generate light fixture grid (offset from sprinklers to avoid clash)
+                offset = spacing / 2  # Offset lights from sprinkler grid
+                y = usable_min_y + offset
+                row_lights = []
+                while y <= usable_max_y:
+                    x = usable_min_x + offset
+                    row = []
+                    while x <= usable_max_x:
+                        light_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                        all_elements.append({
+                            'guid': light_guid,
+                            'discipline': 'ELEC',
+                            'ifc_class': 'IfcLightFixture',
+                            'floor': floor_id,
+                            'center_x': x,
+                            'center_y': y,
+                            'center_z': ceiling_z,
+                            'rotation_z': 0,
+                            'length': light_config.get('width_m', 0.6),
+                            'layer': f'LIGHT_{floor_id}',
+                            'source_file': 'building_config.json',
+                            'polyline_points': None,
+                            'light_config': {
+                                'width': light_config.get('width_m', 0.6),
+                                'depth': light_config.get('depth_m', 0.6),
+                                'thickness': light_config.get('thickness_m', 0.05)
+                            }
+                        })
+                        row.append((x, y))
+                        light_count += 1
+                        x += spacing
+                    row_lights.append(row)
+                    y += spacing
+
+                # Generate conduit network
+                conduit_z = elevation + floor_height + conduit_config.get('z_offset_from_ceiling_m', -0.7)
+
+                if row_lights:
+                    # Main conduit run along Y axis
+                    main_length = usable_max_y - usable_min_y
+                    main_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                    all_elements.append({
+                        'guid': main_guid,
+                        'discipline': 'ELEC',
+                        'ifc_class': 'IfcCableCarrierSegment',
+                        'floor': floor_id,
+                        'center_x': slab_cx + 2,  # Offset from FP main
+                        'center_y': slab_cy,
+                        'center_z': conduit_z,
+                        'rotation_z': math.pi/2,  # Along Y axis
+                        'length': main_length,
+                        'layer': f'ELEC_MAIN_{floor_id}',
+                        'source_file': 'building_config.json',
+                        'polyline_points': None,
+                        'conduit_config': {
+                            'length': main_length,
+                            'width': conduit_config.get('main_width_m', 0.15),
+                            'height': conduit_config.get('main_height_m', 0.08)
+                        }
+                    })
+                    conduit_count += 1
+
+                    # Branch conduits for each row
+                    for row in row_lights:
+                        if len(row) > 0:
+                            row_y = row[0][1]
+                            branch_length = (usable_max_x - usable_min_x)
+                            branch_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                            all_elements.append({
+                                'guid': branch_guid,
+                                'discipline': 'ELEC',
+                                'ifc_class': 'IfcCableCarrierSegment',
+                                'floor': floor_id,
+                                'center_x': slab_cx,
+                                'center_y': row_y,
+                                'center_z': conduit_z,
+                                'rotation_z': 0,  # Along X axis
+                                'length': branch_length,
+                                'layer': f'ELEC_BRANCH_{floor_id}',
+                                'source_file': 'building_config.json',
+                                'polyline_points': None,
+                                'conduit_config': {
+                                    'length': branch_length,
+                                    'width': conduit_config.get('branch_width_m', 0.1),
+                                    'height': conduit_config.get('branch_height_m', 0.05)
+                                }
+                            })
+                            conduit_count += 1
+
+            print(f"  Generated {light_count} light fixtures + {conduit_count} conduit segments")
+
     print(f"\nTotal elements (with interior fit-out): {len(all_elements)}")
 
     # Insert elements into database

@@ -491,6 +491,161 @@ class RoofGenerator:
 
 
 # ============================================================================
+# MEP GEOMETRY GENERATORS
+# ============================================================================
+
+class SprinklerGenerator:
+    """Generate sprinkler head geometry (downward-facing cylinder with deflector)."""
+
+    @staticmethod
+    def generate(head_radius: float, head_length: float,
+                 cx: float, cy: float, cz: float,
+                 segments: int = 8) -> GeometryResult:
+        """
+        Generate sprinkler head at world position.
+
+        Args:
+            head_radius: Sprinkler head radius (meters)
+            head_length: Length of head body (meters)
+            cx, cy, cz: World position (ceiling mount point)
+            segments: Number of sides (default 8)
+        """
+        # Sprinkler hangs down from ceiling
+        # Main body is a small cylinder
+        body_result = CylinderGenerator.generate(
+            head_radius, head_length, cx, cy, cz - head_length, segments
+        )
+
+        # Add deflector plate at bottom (wider, thin disc)
+        deflector_radius = head_radius * 1.5
+        deflector_thickness = 0.01
+        deflector_z = cz - head_length
+
+        deflector_result = CylinderGenerator.generate(
+            deflector_radius, deflector_thickness, cx, cy, deflector_z - deflector_thickness, segments
+        )
+
+        # Combine geometries
+        vertices = list(body_result.vertices) + list(deflector_result.vertices)
+
+        # Offset face indices for deflector
+        offset = len(body_result.vertices)
+        faces = list(body_result.faces) + [
+            (f[0] + offset, f[1] + offset, f[2] + offset) for f in deflector_result.faces
+        ]
+
+        normals = list(body_result.normals) + list(deflector_result.normals)
+
+        return GeometryResult(vertices, faces, normals)
+
+
+class LightFixtureGenerator:
+    """Generate ceiling light fixture geometry (recessed panel)."""
+
+    @staticmethod
+    def generate(width: float, depth: float, thickness: float,
+                 cx: float, cy: float, cz: float) -> GeometryResult:
+        """
+        Generate recessed light fixture at world position.
+
+        Args:
+            width: Fixture width (meters)
+            depth: Fixture depth (meters)
+            thickness: Fixture thickness/recess (meters)
+            cx, cy, cz: World position (ceiling level, fixture center)
+        """
+        # Light fixture is a thin box that sits at ceiling level
+        # Positioned so top is at ceiling (cz), extends down
+        return BoxGenerator.generate(width, depth, thickness, cx, cy, cz - thickness)
+
+
+class PipeSegmentGenerator:
+    """Generate pipe/conduit segment geometry (oriented cylinder)."""
+
+    @staticmethod
+    def generate(radius: float, length: float,
+                 cx: float, cy: float, cz: float,
+                 rotation: float, segments: int = 8) -> GeometryResult:
+        """
+        Generate pipe segment oriented along rotation angle.
+
+        Args:
+            radius: Pipe radius (meters)
+            length: Pipe length (meters)
+            cx, cy, cz: World position of pipe center
+            rotation: Rotation angle in radians (CCW from X axis)
+            segments: Number of sides (default 8)
+        """
+        # Generate cylinder along rotation direction
+        # Start and end points based on rotation
+        hl = length / 2
+        cos_r = math.cos(rotation)
+        sin_r = math.sin(rotation)
+
+        # Calculate start position (half length back from center)
+        start_x = cx - hl * cos_r
+        start_y = cy - hl * sin_r
+
+        vertices = []
+        faces = []
+
+        # Generate vertices at start end
+        for i in range(segments):
+            angle = 2 * math.pi * i / segments
+            # Local offset perpendicular to pipe direction
+            local_x = radius * math.cos(angle)
+            local_y = radius * math.sin(angle)
+
+            # Transform to world (perpendicular to pipe)
+            # Perpendicular direction is (-sin_r, cos_r) in XY plane
+            # and (0, 0, 1) in Z
+            wx = start_x + local_x * (-sin_r) + local_y * 0
+            wy = start_y + local_x * cos_r + local_y * 0
+            wz = cz + local_y
+            vertices.append((wx, wy, wz))
+
+        # Generate vertices at end
+        end_x = cx + hl * cos_r
+        end_y = cy + hl * sin_r
+
+        for i in range(segments):
+            angle = 2 * math.pi * i / segments
+            local_x = radius * math.cos(angle)
+            local_y = radius * math.sin(angle)
+
+            wx = end_x + local_x * (-sin_r)
+            wy = end_y + local_x * cos_r
+            wz = cz + local_y
+            vertices.append((wx, wy, wz))
+
+        # Add center points for caps
+        start_center = len(vertices)
+        vertices.append((start_x, start_y, cz))
+        end_center = len(vertices)
+        vertices.append((end_x, end_y, cz))
+
+        # Start cap faces
+        for i in range(segments):
+            faces.append((start_center, (i + 1) % segments, i))
+
+        # End cap faces
+        for i in range(segments):
+            faces.append((end_center, segments + i, segments + (i + 1) % segments))
+
+        # Side faces
+        for i in range(segments):
+            b1 = i
+            b2 = (i + 1) % segments
+            t1 = segments + i
+            t2 = segments + (i + 1) % segments
+            faces.append((b1, t1, t2))
+            faces.append((b1, t2, b2))
+
+        normals = [compute_face_normal(vertices[f[0]], vertices[f[1]], vertices[f[2]]) for f in faces]
+        return GeometryResult(vertices, faces, normals)
+
+
+# ============================================================================
 # FACTORY FUNCTION
 # ============================================================================
 
@@ -630,6 +785,63 @@ def generate_element_geometry(elem: Dict, templates: Dict) -> GeometryResult:
             )
         else:
             return BoxGenerator.generate(width, depth, height, cx, cy, cz)
+
+    # ========================================================================
+    # MEP ELEMENTS
+    # ========================================================================
+
+    elif ifc_class == 'IfcFireSuppressionTerminal':
+        # Sprinkler heads
+        if 'sprinkler_config' in elem:
+            config = elem['sprinkler_config']
+            return SprinklerGenerator.generate(
+                config.get('head_radius', 0.025),
+                config.get('head_length', 0.08),
+                cx, cy, cz
+            )
+        else:
+            return SprinklerGenerator.generate(0.025, 0.08, cx, cy, cz)
+
+    elif ifc_class == 'IfcLightFixture':
+        # Ceiling light fixtures
+        if 'light_config' in elem:
+            config = elem['light_config']
+            return LightFixtureGenerator.generate(
+                config.get('width', 0.6),
+                config.get('depth', 0.6),
+                config.get('thickness', 0.05),
+                cx, cy, cz
+            )
+        else:
+            return LightFixtureGenerator.generate(0.6, 0.6, 0.05, cx, cy, cz)
+
+    elif ifc_class == 'IfcPipeSegment':
+        # Fire protection pipe segments
+        if 'pipe_config' in elem:
+            config = elem['pipe_config']
+            return PipeSegmentGenerator.generate(
+                config.get('radius', 0.05),
+                config.get('length', length if length > 0 else 1.0),
+                cx, cy, cz, rotation
+            )
+        else:
+            pipe_length = length if length > 0 else 1.0
+            return PipeSegmentGenerator.generate(0.05, pipe_length, cx, cy, cz, rotation)
+
+    elif ifc_class == 'IfcCableCarrierSegment':
+        # Electrical conduit/cable tray segments
+        if 'conduit_config' in elem:
+            config = elem['conduit_config']
+            # Cable carriers are rectangular
+            return OrientedBoxGenerator.generate(
+                config.get('length', length if length > 0 else 1.0),
+                config.get('width', 0.1),
+                config.get('height', 0.05),
+                cx, cy, cz, rotation
+            )
+        else:
+            conduit_length = length if length > 0 else 1.0
+            return OrientedBoxGenerator.generate(conduit_length, 0.1, 0.05, cx, cy, cz, rotation)
 
     else:
         # Default: axis-aligned box
