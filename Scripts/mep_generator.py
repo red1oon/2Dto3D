@@ -315,6 +315,61 @@ class FPGenerator(DisciplineGenerator):
                     }
                 })
 
+            # Fire hose reels (wall-mounted cabinets)
+            hose_reel_positions = [
+                (min_x + 5, slab_cy - 10),
+                (min_x + 5, slab_cy + 10),
+                (max_x - 5, slab_cy - 10),
+                (max_x - 5, slab_cy + 10),
+            ]
+            for hx, hy in hose_reel_positions:
+                elements.append({
+                    'guid': self._create_guid(),
+                    'discipline': 'FP',
+                    'ifc_class': 'IfcFireSuppressionTerminal',
+                    'floor': floor_id,
+                    'center_x': hx,
+                    'center_y': hy,
+                    'center_z': elevation + 1.0,  # Mounted at 1m height
+                    'rotation_z': 0,
+                    'length': 0.6,
+                    'layer': f'HOSE_REEL_{floor_id}',
+                    'source_file': 'zones_config.json',
+                    'polyline_points': None,
+                    'hose_reel_config': {
+                        'width': 0.6,
+                        'depth': 0.2,
+                        'height': 0.8
+                    }
+                })
+
+            # Fire extinguishers (near exits and high-risk areas)
+            extinguisher_positions = [
+                (slab_cx - 10, min_y + 5),
+                (slab_cx + 10, min_y + 5),
+                (slab_cx - 10, max_y - 5),
+                (slab_cx + 10, max_y - 5),
+            ]
+            for ex, ey in extinguisher_positions:
+                elements.append({
+                    'guid': self._create_guid(),
+                    'discipline': 'FP',
+                    'ifc_class': 'IfcFireSuppressionTerminal',
+                    'floor': floor_id,
+                    'center_x': ex,
+                    'center_y': ey,
+                    'center_z': elevation + 0.8,
+                    'rotation_z': 0,
+                    'length': 0.15,
+                    'layer': f'EXTINGUISHER_{floor_id}',
+                    'source_file': 'zones_config.json',
+                    'polyline_points': None,
+                    'extinguisher_config': {
+                        'type': 'ABC',
+                        'height': 0.5
+                    }
+                })
+
         return elements
 
 
@@ -526,6 +581,62 @@ class ELECGenerator(DisciplineGenerator):
                         'type': 'light_switch',
                         'width': 0.08,
                         'height': 0.12
+                    }
+                })
+
+            # CCTV cameras (ceiling-mounted at strategic locations)
+            cctv_positions = [
+                (min_x + 8, min_y + 8),   # SW corner
+                (max_x - 8, min_y + 8),   # SE corner
+                (min_x + 8, max_y - 8),   # NW corner
+                (max_x - 8, max_y - 8),   # NE corner
+                (slab_cx, min_y + 10),    # South entrance
+                (slab_cx, max_y - 10),    # North entrance
+            ]
+            for cx, cy in cctv_positions:
+                elements.append({
+                    'guid': self._create_guid(),
+                    'discipline': 'ELEC',
+                    'ifc_class': 'IfcElectricAppliance',
+                    'floor': floor_id,
+                    'center_x': cx,
+                    'center_y': cy,
+                    'center_z': ceiling_z - 0.3,  # Ceiling mounted
+                    'rotation_z': 0,
+                    'length': 0.15,
+                    'layer': f'CCTV_{floor_id}',
+                    'source_file': 'zones_config.json',
+                    'polyline_points': None,
+                    'cctv_config': {
+                        'type': 'dome',
+                        'radius': 0.1
+                    }
+                })
+
+            # PA speakers (ceiling-mounted for announcements)
+            pa_positions = [
+                (slab_cx - 12, slab_cy - 10),
+                (slab_cx + 12, slab_cy - 10),
+                (slab_cx - 12, slab_cy + 10),
+                (slab_cx + 12, slab_cy + 10),
+            ]
+            for px, py in pa_positions:
+                elements.append({
+                    'guid': self._create_guid(),
+                    'discipline': 'ELEC',
+                    'ifc_class': 'IfcElectricAppliance',
+                    'floor': floor_id,
+                    'center_x': px,
+                    'center_y': py,
+                    'center_z': ceiling_z - 0.2,
+                    'rotation_z': 0,
+                    'length': 0.25,
+                    'layer': f'PA_SPEAKER_{floor_id}',
+                    'source_file': 'zones_config.json',
+                    'polyline_points': None,
+                    'speaker_config': {
+                        'type': 'ceiling',
+                        'diameter': 0.2
                     }
                 })
 
