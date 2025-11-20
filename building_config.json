@@ -122,6 +122,19 @@
     "note": "Iconic dome at roof center - prominent feature of terminal"
   },
 
+  "atrium": {
+    "enabled": true,
+    "center_x_m": 0.0,
+    "center_y_m": -10.0,
+    "width_m": 30.0,
+    "depth_m": 40.0,
+    "height_m": 12.5,
+    "ceiling_elevation_m": 12.5,
+    "gallery_width_m": 6.0,
+    "gallery_floors": ["1F", "3F"],
+    "note": "Central atrium with high ceiling spanning GF to 4F, galleries on upper floors"
+  },
+
   "roof": {
     "type": "flat_with_dome",
     "base_elevation_m": 16.5,

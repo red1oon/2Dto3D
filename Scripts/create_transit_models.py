@@ -206,6 +206,140 @@ def create_info_kiosk():
     vertices, faces = merge_meshes([(base_v, base_f), (stem_v, stem_f), screen])
     return vertices, faces, "info_kiosk"
 
+def create_ceiling_fan():
+    """Detailed ceiling fan with 5 blades - high polygon for impressive visuals."""
+    meshes = []
+
+    # Mounting rod (hangs down from ceiling)
+    rod_v, rod_f = create_cylinder(0.02, 0.4, 12, center=(0, 0, 0))
+    meshes.append((rod_v, rod_f))
+
+    # Motor housing - detailed cylinder (32 segments for smooth appearance)
+    housing_v, housing_f = create_cylinder(0.12, 0.15, 32, center=(0, 0, -0.15))
+    meshes.append((housing_v, housing_f))
+
+    # Motor cap (bottom dome-like)
+    cap_v, cap_f = create_cylinder(0.08, 0.05, 24, center=(0, 0, -0.3))
+    meshes.append((cap_v, cap_f))
+
+    # 5 fan blades with detailed geometry
+    num_blades = 5
+    blade_length = 0.6
+    blade_width = 0.12
+    blade_thickness = 0.015
+
+    for i in range(num_blades):
+        angle = 2 * np.pi * i / num_blades
+
+        # Create blade as angled box
+        # Blade extends outward from motor
+        blade_verts = []
+        blade_faces = []
+
+        # Inner edge (near motor)
+        inner_radius = 0.1
+        outer_radius = inner_radius + blade_length
+
+        # Blade has 8 vertices per section, multiple sections for detail
+        sections = 8  # More sections = smoother blade
+
+        for s in range(sections + 1):
+            t = s / sections
+            r = inner_radius + t * blade_length
+
+            # Blade twist angle (fans have twisted blades)
+            twist = t * 0.3  # Radians
+
+            # 4 corners at this section
+            hw = blade_width / 2 * (1 - t * 0.3)  # Taper toward tip
+            ht = blade_thickness / 2
+
+            # Rotate by blade angle and twist
+            cos_a = np.cos(angle + twist)
+            sin_a = np.sin(angle + twist)
+
+            # Local coords -> world coords
+            x_base = r * np.cos(angle)
+            y_base = r * np.sin(angle)
+
+            # Perpendicular to blade direction
+            perp_x = -np.sin(angle)
+            perp_y = np.cos(angle)
+
+            # Add 4 vertices for this section
+            z_base = -0.22  # At motor level
+            blade_verts.extend([
+                [x_base + perp_x * hw, y_base + perp_y * hw, z_base - ht],  # Bottom-left
+                [x_base + perp_x * hw, y_base + perp_y * hw, z_base + ht],  # Top-left
+                [x_base - perp_x * hw, y_base - perp_y * hw, z_base + ht],  # Top-right
+                [x_base - perp_x * hw, y_base - perp_y * hw, z_base - ht],  # Bottom-right
+            ])
+
+        # Create faces between sections
+        for s in range(sections):
+            base = len(blade_verts) - (sections + 1) * 4 + s * 4
+            next_base = base + 4
+
+            # Front face
+            blade_faces.append([base + 0, next_base + 0, next_base + 1])
+            blade_faces.append([base + 0, next_base + 1, base + 1])
+
+            # Back face
+            blade_faces.append([base + 2, next_base + 2, next_base + 3])
+            blade_faces.append([base + 2, next_base + 3, base + 3])
+
+            # Top face
+            blade_faces.append([base + 1, next_base + 1, next_base + 2])
+            blade_faces.append([base + 1, next_base + 2, base + 2])
+
+            # Bottom face
+            blade_faces.append([base + 0, base + 3, next_base + 3])
+            blade_faces.append([base + 0, next_base + 3, next_base + 0])
+
+        # Cap ends
+        # Inner cap
+        base = len(blade_verts) - (sections + 1) * 4
+        blade_faces.append([base + 0, base + 1, base + 2])
+        blade_faces.append([base + 0, base + 2, base + 3])
+
+        # Outer cap (tip)
+        tip = len(blade_verts) - 4
+        blade_faces.append([tip + 0, tip + 3, tip + 2])
+        blade_faces.append([tip + 0, tip + 2, tip + 1])
+
+        meshes.append((np.array(blade_verts, dtype=np.float32),
+                      np.array(blade_faces, dtype=np.int32)))
+
+    vertices, faces = merge_meshes(meshes)
+    return vertices, faces, "ceiling_fan"
+
+def create_bench_seating():
+    """Airport-style bench seating (3-seater) with armrests."""
+    meshes = []
+
+    # Seat frame (long beam)
+    seat_v, seat_f = create_box(1.8, 0.5, 0.08, center=(0, 0, 0.42))
+    meshes.append((seat_v, seat_f))
+
+    # Backrest
+    back_v, back_f = create_box(1.8, 0.08, 0.4, center=(0, 0.21, 0.7))
+    meshes.append((back_v, back_f))
+
+    # Legs (4 corners)
+    leg_positions = [(-0.8, -0.15), (0.8, -0.15), (-0.8, 0.15), (0.8, 0.15)]
+    for lx, ly in leg_positions:
+        leg_v, leg_f = create_box(0.04, 0.04, 0.42, center=(lx, ly, 0))
+        meshes.append((leg_v, leg_f))
+
+    # Armrests (4 dividers)
+    arm_positions = [-0.9, -0.3, 0.3, 0.9]
+    for ax in arm_positions:
+        arm_v, arm_f = create_box(0.03, 0.4, 0.25, center=(ax, 0, 0.55))
+        meshes.append((arm_v, arm_f))
+
+    vertices, faces = merge_meshes(meshes)
+    return vertices, faces, "bench_seating"
+
 # =============================================================================
 # Export Functions
 # =============================================================================
@@ -285,6 +419,8 @@ def main():
         create_retractable_stanchion,
         create_atm_kiosk,
         create_info_kiosk,
+        create_ceiling_fan,
+        create_bench_seating,
     ]
 
     print(f"\nGenerating {len(generators)} transit fixture models...\n")

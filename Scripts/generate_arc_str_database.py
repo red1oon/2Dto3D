@@ -79,6 +79,502 @@ OUTPUT_DB = OUTPUT_DIR / "Terminal1_ARC_STR.db"
 GEOMETRY_LIBRARY = OUTPUT_DIR / "geometry_library.db"
 
 # ============================================================================
+# SUB-GROUP DEFINITIONS (Processing Order)
+# ============================================================================
+# Elements are processed in sub-group order to ensure:
+# - Large structural elements placed first (define constraints)
+# - Smaller elements placed later (adapt to structure)
+# - Natural clash avoidance through construction sequencing
+
+SUB_GROUPS = {
+    # ARC discipline sub-groups
+    'ARC-01-CORE': 10,        # Structural walls, shafts, core
+    'ARC-02-ENVELOPE': 20,    # Perimeter walls, curtain walls, roof
+    'ARC-03-VERTICAL': 30,    # Stairs, elevators, escalators, ramps
+    'ARC-04-PARTITION': 40,   # Interior walls, glass partitions
+    'ARC-05-OPENING': 50,     # Doors, windows
+    'ARC-06-FIXTURE': 60,     # Counters, built-in furniture, kiosks
+    'ARC-07-LOOSE': 70,       # Seating, signage, accessories
+
+    # STR discipline sub-groups
+    'STR-01-PRIMARY': 11,     # Columns, main beams, slabs
+    'STR-02-SECONDARY': 21,   # Bracing, secondary beams
+
+    # FP discipline sub-groups
+    'FP-01-MAIN': 31,         # Risers, main pipes
+    'FP-02-BRANCH': 41,       # Branch pipes
+    'FP-03-TERMINAL': 51,     # Sprinkler heads, extinguishers
+
+    # ELEC discipline sub-groups
+    'ELEC-01-DIST': 32,       # Panels, main distribution
+    'ELEC-02-CIRCUIT': 42,    # Cable trays, conduits
+    'ELEC-03-DEVICE': 52,     # Lights, switches, outlets
+
+    # ACMV discipline sub-groups
+    'ACMV-01-MAIN': 33,       # AHUs, main ducts
+    'ACMV-02-BRANCH': 43,     # Branch ducts
+    'ACMV-03-TERMINAL': 53,   # Diffusers, grilles
+}
+
+def get_sub_group(discipline, ifc_class, layer=''):
+    """Determine sub-group based on discipline, IFC class, and layer."""
+    layer_upper = layer.upper()
+
+    if discipline == 'STR':
+        if ifc_class in ['IfcColumn', 'IfcSlab']:
+            return 'STR-01-PRIMARY'
+        return 'STR-02-SECONDARY'
+
+    elif discipline == 'FP':
+        if 'MAIN' in layer_upper or ifc_class == 'IfcPipeSegment':
+            return 'FP-01-MAIN' if 'MAIN' in layer_upper else 'FP-02-BRANCH'
+        return 'FP-03-TERMINAL'
+
+    elif discipline == 'ELEC':
+        if ifc_class == 'IfcCableCarrierSegment':
+            return 'ELEC-02-CIRCUIT'
+        elif ifc_class == 'IfcLightFixture':
+            return 'ELEC-03-DEVICE'
+        return 'ELEC-03-DEVICE'
+
+    elif discipline == 'ACMV':
+        if ifc_class == 'IfcDuctSegment':
+            return 'ACMV-01-MAIN' if 'MAIN' in layer_upper else 'ACMV-02-BRANCH'
+        return 'ACMV-03-TERMINAL'
+
+    else:  # ARC
+        if ifc_class in ['IfcWall']:
+            if 'PERIMETER' in layer_upper or 'CURTAIN' in layer_upper:
+                return 'ARC-02-ENVELOPE'
+            elif 'PARTITION' in layer_upper or 'GLASS' in layer_upper:
+                return 'ARC-04-PARTITION'
+            return 'ARC-01-CORE'
+        elif ifc_class in ['IfcStairFlight', 'IfcTransportElement', 'IfcRamp']:
+            return 'ARC-03-VERTICAL'
+        elif ifc_class in ['IfcDoor', 'IfcWindow']:
+            return 'ARC-05-OPENING'
+        elif ifc_class in ['IfcCurtainWall', 'IfcPlate', 'IfcRoof']:
+            return 'ARC-02-ENVELOPE'
+        elif ifc_class == 'IfcFurniture':
+            if any(k in layer_upper for k in ['COUNTER', 'KIOSK', 'BOOTH']):
+                return 'ARC-06-FIXTURE'
+            return 'ARC-07-LOOSE'
+        elif ifc_class == 'IfcSpace':
+            return 'ARC-01-CORE'
+        return 'ARC-06-FIXTURE'
+
+# ============================================================================
+# SPATIAL INDEX FOR CLASH AWARENESS
+# ============================================================================
+
+class BoundingBox:
+    """Axis-aligned bounding box for spatial queries."""
+    def __init__(self, min_x, min_y, min_z, max_x, max_y, max_z):
+        self.min_x = min_x
+        self.min_y = min_y
+        self.min_z = min_z
+        self.max_x = max_x
+        self.max_y = max_y
+        self.max_z = max_z
+
+    def intersects(self, other, tolerance=0.01):
+        """Check if this bbox intersects another with tolerance."""
+        return not (
+            self.max_x < other.min_x - tolerance or
+            self.min_x > other.max_x + tolerance or
+            self.max_y < other.min_y - tolerance or
+            self.min_y > other.max_y + tolerance or
+            self.max_z < other.min_z - tolerance or
+            self.min_z > other.max_z + tolerance
+        )
+
+    def volume(self):
+        return (self.max_x - self.min_x) * (self.max_y - self.min_y) * (self.max_z - self.min_z)
+
+    def center(self):
+        return (
+            (self.min_x + self.max_x) / 2,
+            (self.min_y + self.max_y) / 2,
+            (self.min_z + self.max_z) / 2
+        )
+
+class SpatialIndex:
+    """Grid-based spatial index for efficient clash detection."""
+
+    def __init__(self, cell_size=2.0):
+        self.cell_size = cell_size
+        self.grid = {}  # (cx, cy, cz) -> list of (guid, bbox, sub_group)
+        self.elements = {}  # guid -> (bbox, sub_group, ifc_class)
+        self.exclusion_zones = []  # List of (bbox, reason) - hard stop zones
+
+    def add_exclusion_zone(self, bbox, reason="exclusion_zone"):
+        """Add a hard-stop exclusion zone where no elements can be placed."""
+        self.exclusion_zones.append((bbox, reason))
+
+    def check_exclusion(self, bbox):
+        """Check if bbox is in any exclusion zone. Returns (in_zone, reason)."""
+        for zone_bbox, reason in self.exclusion_zones:
+            if bbox.intersects(zone_bbox):
+                return (True, reason)
+        return (False, None)
+
+    def _get_cells(self, bbox):
+        """Get all grid cells that a bounding box occupies."""
+        cells = []
+        min_cx = int(bbox.min_x // self.cell_size)
+        max_cx = int(bbox.max_x // self.cell_size)
+        min_cy = int(bbox.min_y // self.cell_size)
+        max_cy = int(bbox.max_y // self.cell_size)
+        min_cz = int(bbox.min_z // self.cell_size)
+        max_cz = int(bbox.max_z // self.cell_size)
+
+        for cx in range(min_cx, max_cx + 1):
+            for cy in range(min_cy, max_cy + 1):
+                for cz in range(min_cz, max_cz + 1):
+                    cells.append((cx, cy, cz))
+        return cells
+
+    def insert(self, guid, bbox, sub_group, ifc_class):
+        """Insert element into spatial index."""
+        self.elements[guid] = (bbox, sub_group, ifc_class)
+        for cell in self._get_cells(bbox):
+            if cell not in self.grid:
+                self.grid[cell] = []
+            self.grid[cell].append(guid)
+
+    def query(self, bbox):
+        """Find all elements that potentially intersect with bbox."""
+        candidates = set()
+        for cell in self._get_cells(bbox):
+            if cell in self.grid:
+                candidates.update(self.grid[cell])
+        return candidates
+
+    def check_clash(self, bbox, sub_group, ifc_class):
+        """Check for clashes and return conflicting elements."""
+        clashes = []
+        for guid in self.query(bbox):
+            other_bbox, other_sub_group, other_ifc_class = self.elements[guid]
+            if bbox.intersects(other_bbox):
+                # Determine clash severity
+                clash_info = {
+                    'guid': guid,
+                    'ifc_class': other_ifc_class,
+                    'sub_group': other_sub_group,
+                    'priority': SUB_GROUPS.get(other_sub_group, 99)
+                }
+                clashes.append(clash_info)
+        return clashes
+
+def calculate_bbox(elem, templates):
+    """Calculate bounding box for an element."""
+    cx = elem['center_x']
+    cy = elem['center_y']
+    cz = elem['center_z']
+    ifc_class = elem['ifc_class']
+
+    # Get dimensions from templates or defaults
+    if elem['discipline'] == 'ARC':
+        params = templates.get('arc_elements', {}).get(ifc_class, {}).get('parameters', {})
+    else:
+        params = templates.get('str_elements', {}).get(ifc_class, {}).get('parameters', {})
+
+    # Estimate dimensions based on element type
+    length = elem.get('length', params.get('length', 1.0))
+    width = params.get('width', params.get('thickness', 0.3))
+    height = params.get('height', params.get('default_height', 3.0))
+
+    # Special handling for different IFC classes
+    if ifc_class == 'IfcColumn':
+        width = params.get('diameter', params.get('width', 0.5))
+        height = params.get('default_height', 4.0)
+        half_w = width / 2
+        return BoundingBox(cx - half_w, cy - half_w, cz, cx + half_w, cy + half_w, cz + height)
+
+    elif ifc_class == 'IfcSlab':
+        slab_config = elem.get('floor_slab_config', {})
+        w = slab_config.get('width', length) / 2
+        d = slab_config.get('depth', length) / 2
+        t = slab_config.get('thickness', 0.3)
+        return BoundingBox(cx - w, cy - d, cz, cx + w, cy + d, cz + t)
+
+    elif ifc_class in ['IfcFurniture', 'IfcElectricAppliance']:
+        # Furniture sits ON slabs - bbox starts ABOVE slab thickness
+        # Standard slab is 0.3m, so start furniture bbox at 0.35m above floor
+        half_l = length / 2 if length else 0.5
+        furniture_base = 0.35  # Above typical slab thickness
+        return BoundingBox(cx - half_l, cy - half_l, cz + furniture_base,
+                          cx + half_l, cy + half_l, cz + furniture_base + 1.0)
+
+    elif ifc_class in ['IfcFireSuppressionTerminal', 'IfcLightFixture', 'IfcAlarm', 'IfcAirTerminal']:
+        # Small MEP devices
+        r = 0.15
+        return BoundingBox(cx - r, cy - r, cz - 0.3, cx + r, cy + r, cz)
+
+    elif ifc_class == 'IfcWall':
+        # Walls are linear
+        half_l = length / 2 if length else 1.0
+        half_w = width / 2 if width else 0.15
+        rot = elem.get('rotation_z', 0)
+        # Simplified - assume axis-aligned for now
+        return BoundingBox(cx - half_l, cy - half_w, cz, cx + half_l, cy + half_w, cz + height)
+
+    else:
+        # Default box
+        half = length / 2 if length else 0.5
+        return BoundingBox(cx - half, cy - half, cz, cx + half, cy + half, cz + height)
+
+# Clearance gap for "give way" repositioning (meters)
+CLEARANCE_GAP = 0.5  # Elements moved aside maintain this minimum gap
+
+# Resolution actions for clash resolution - base actions
+# Sub-groups can modify how aggressively these are applied
+RESOLUTION_ACTIONS_BASE = [
+    {'type': 'offset_z', 'delta': 0.3, 'direction': 'down', 'max_attempts': 3},
+    {'type': 'offset_z', 'delta': 0.3, 'direction': 'up', 'max_attempts': 2},
+    {'type': 'offset_xy', 'delta': 0.5, 'directions': ['N', 'S', 'E', 'W'], 'max_attempts': 4},
+    {'type': 'offset_xy', 'delta': 1.0, 'directions': ['N', 'S', 'E', 'W'], 'max_attempts': 4},  # Larger nudge
+    {'type': 'scale', 'factor': 0.8, 'max_attempts': 2},
+]
+
+# Extended actions for loose/furniture elements that CAN be moved
+RESOLUTION_ACTIONS_EXTENDED = [
+    {'type': 'offset_z', 'delta': 0.3, 'direction': 'down', 'max_attempts': 5},
+    {'type': 'offset_z', 'delta': 0.3, 'direction': 'up', 'max_attempts': 3},
+    {'type': 'offset_xy', 'delta': 0.5, 'directions': ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'], 'max_attempts': 8},
+    {'type': 'offset_xy', 'delta': 1.0, 'directions': ['N', 'S', 'E', 'W', 'NE', 'NW', 'SE', 'SW'], 'max_attempts': 8},
+    {'type': 'offset_xy', 'delta': 1.5, 'directions': ['N', 'S', 'E', 'W'], 'max_attempts': 4},  # Larger move
+    {'type': 'scale', 'factor': 0.8, 'max_attempts': 2},
+    {'type': 'scale', 'factor': 0.6, 'max_attempts': 1},  # More aggressive scaling
+]
+
+def get_resolution_actions_for_subgroup(sub_group):
+    """Get appropriate resolution actions based on sub-group.
+
+    Loose elements (furniture, movables) get extended actions.
+    Fixed elements get base actions only.
+    """
+    # Sub-groups that can be more aggressively moved
+    LOOSE_SUBGROUPS = {
+        'ARC-07-LOOSE',      # Seating, signage, accessories
+        'ARC-06-FIXTURE',    # Counters, kiosks - somewhat movable
+        'ELEC-03-DEVICE',    # Lights, switches - can be repositioned
+        'ACMV-03-TERMINAL',  # Diffusers, grilles - can adjust
+        'FP-03-TERMINAL',    # Sprinkler heads - slight adjustment ok
+    }
+
+    if sub_group in LOOSE_SUBGROUPS:
+        return RESOLUTION_ACTIONS_EXTENDED
+    return RESOLUTION_ACTIONS_BASE
+
+# Default element weights for clash resolution (lower = higher priority, don't move)
+# These can be overridden by building_config.json "element_weights" section
+DEFAULT_ELEMENT_WEIGHTS = {
+    # Regulated (code compliance) - CANNOT move
+    'IfcFireSuppressionTerminal': 1,  # Sprinklers
+    'IfcAlarm': 1,  # Smoke detectors
+    # Structural - CANNOT move
+    'IfcColumn': 2,
+    'IfcBeam': 2,
+    'IfcSlab': 2,
+    'IfcWall': 2,
+    # MEP Main - prefer not to move
+    'IfcPipeSegment': 3,
+    'IfcDuctSegment': 3,
+    'IfcCableCarrierSegment': 3,
+    # Fixed elements
+    'IfcCurtainWall': 4,
+    'IfcDoor': 4,
+    'IfcWindow': 4,
+    'IfcStairFlight': 4,
+    # MEP terminals - somewhat flexible
+    'IfcLightFixture': 5,
+    'IfcAirTerminal': 5,
+    # Furniture - CAN move
+    'IfcFurniture': 6,
+    'IfcElectricAppliance': 6,
+    # Most flexible
+    'IfcPlate': 7,
+    'IfcSpace': 8,
+}
+
+def get_element_weight(ifc_class, templates, elem=None):
+    """Look up element weight from templates or use default.
+
+    Weight determines clash resolution priority:
+    - Lower weight = higher priority (don't move)
+    - Higher weight = lower priority (can yield)
+
+    For furniture, weight can be adjusted based on strategic location.
+    """
+    # First check if templates have custom weights
+    if templates:
+        # Check arc_elements
+        arc_elem = templates.get('arc_elements', {}).get(ifc_class, {})
+        if 'weight' in arc_elem:
+            base_weight = arc_elem['weight']
+        else:
+            # Check str_elements
+            str_elem = templates.get('str_elements', {}).get(ifc_class, {})
+            if 'weight' in str_elem:
+                base_weight = str_elem['weight']
+            else:
+                base_weight = DEFAULT_ELEMENT_WEIGHTS.get(ifc_class, 5)
+    else:
+        base_weight = DEFAULT_ELEMENT_WEIGHTS.get(ifc_class, 5)
+
+    # LOCATION-BASED WEIGHT ADJUSTMENT for furniture
+    if ifc_class == 'IfcFurniture' and elem:
+        cx = elem.get('center_x', 0)
+        cy = elem.get('center_y', 0)
+        layer = elem.get('layer', '').upper()
+
+        # Priority furniture (lower weight = higher priority):
+        # 1. Central atrium seating (BENCH_SEATING layer)
+        # 2. Near entrance areas (|cy| < 10m from center)
+        # 3. Main waiting areas
+
+        if 'BENCH' in layer or 'SEATING' in layer:
+            # Central seating area - high priority
+            if abs(cx) < 15 and abs(cy) < 15:
+                return base_weight - 2  # Weight 4 (higher priority)
+            else:
+                return base_weight - 1  # Weight 5 (medium priority)
+
+        # Perimeter/corner furniture - lower priority (can be removed)
+        if abs(cx) > 20 or abs(cy) > 25:
+            return base_weight + 1  # Weight 7 (lower priority)
+
+    return base_weight
+
+def should_yield(elem_ifc_class, clash_ifc_classes, templates=None):
+    """Check if element should yield (skip) based on weight comparison.
+
+    Soft/heavy-weight elements yield to hard/light-weight elements.
+    Returns True if element should be skipped.
+    """
+    # Elements that should NEVER be yielded/removed (keep even with unresolved clashes)
+    NEVER_YIELD = {
+        'IfcSlab', 'IfcWall', 'IfcBeam', 'IfcColumn',  # Structure
+        'IfcFireSuppressionTerminal', 'IfcAlarm',  # Code compliance
+        'IfcFurniture', 'IfcElectricAppliance',  # Asset elements
+        'IfcSanitaryTerminal', 'IfcFlowTerminal',  # Fixtures
+    }
+
+    if elem_ifc_class in NEVER_YIELD:
+        return False  # Never remove these - keep even with unresolved clashes
+
+    # Acceptable clashes - elements that are MEANT to coexist
+    # Furniture/fixtures sit ON slabs, near walls, etc.
+    ACCEPTABLE_PAIRS = {
+        ('IfcFurniture', 'IfcSlab'),
+        ('IfcFurniture', 'IfcWall'),
+        ('IfcFurniture', 'IfcBeam'),
+        ('IfcFurniture', 'IfcColumn'),
+        ('IfcFurniture', 'IfcSpace'),
+        ('IfcElectricAppliance', 'IfcSlab'),
+        ('IfcElectricAppliance', 'IfcWall'),
+        ('IfcElectricAppliance', 'IfcSpace'),
+        # MEP can penetrate slabs/structure
+        ('IfcFireSuppressionTerminal', 'IfcSlab'),
+        ('IfcFireSuppressionTerminal', 'IfcWall'),
+        ('IfcLightFixture', 'IfcSlab'),
+        ('IfcLightFixture', 'IfcWall'),
+        ('IfcAirTerminal', 'IfcSlab'),
+        ('IfcAirTerminal', 'IfcWall'),
+        ('IfcAlarm', 'IfcSlab'),
+        ('IfcAlarm', 'IfcWall'),
+        # Plates are decorative, can overlap
+        ('IfcPlate', 'IfcSlab'),
+        ('IfcPlate', 'IfcWall'),
+        ('IfcPlate', 'IfcBeam'),
+    }
+
+    elem_weight = get_element_weight(elem_ifc_class, templates, None)
+
+    dominated_by_higher_priority = False
+    for clash_class in clash_ifc_classes:
+        # Check if this is an acceptable pair
+        if (elem_ifc_class, clash_class) in ACCEPTABLE_PAIRS:
+            continue  # Don't yield for acceptable clashes
+
+        clash_weight = get_element_weight(clash_class, templates, None)
+        # If clashing with lower-weight (higher priority) element, yield
+        if clash_weight < elem_weight:
+            dominated_by_higher_priority = True
+
+    return dominated_by_higher_priority
+
+def resolve_clash(elem, bbox, clashes, spatial_index, templates):
+    """Attempt to resolve clashes using resolution actions.
+
+    Uses sub-group aware resolution - loose elements try harder to reposition.
+    Returns: (resolved, new_position, action_taken)
+    """
+    original_x = elem['center_x']
+    original_y = elem['center_y']
+    original_z = elem['center_z']
+
+    # Get appropriate resolution actions based on sub-group
+    sub_group = elem.get('sub_group', '')
+    resolution_actions = get_resolution_actions_for_subgroup(sub_group)
+
+    for action in resolution_actions:
+        if action['type'] == 'offset_z':
+            delta = action['delta']
+            direction = 1 if action['direction'] == 'up' else -1
+            for attempt in range(action['max_attempts']):
+                new_z = original_z + (delta * (attempt + 1) * direction)
+                elem['center_z'] = new_z
+                new_bbox = calculate_bbox(elem, templates)
+                new_clashes = spatial_index.check_clash(new_bbox, elem['sub_group'], elem['ifc_class'])
+                if not new_clashes:
+                    return (True, {'x': original_x, 'y': original_y, 'z': new_z},
+                            f"offset_z_{action['direction']}_{delta*(attempt+1):.1f}m")
+            elem['center_z'] = original_z  # Reset
+
+        elif action['type'] == 'offset_xy':
+            delta = action['delta'] + CLEARANCE_GAP  # Add clearance gap
+            diag_delta = delta * 0.707  # diagonal distance (1/sqrt(2))
+            for direction in action['directions']:
+                # Calculate dx, dy for cardinal and diagonal directions
+                if direction == 'N':
+                    dx, dy = 0, delta
+                elif direction == 'S':
+                    dx, dy = 0, -delta
+                elif direction == 'E':
+                    dx, dy = delta, 0
+                elif direction == 'W':
+                    dx, dy = -delta, 0
+                elif direction == 'NE':
+                    dx, dy = diag_delta, diag_delta
+                elif direction == 'NW':
+                    dx, dy = -diag_delta, diag_delta
+                elif direction == 'SE':
+                    dx, dy = diag_delta, -diag_delta
+                elif direction == 'SW':
+                    dx, dy = -diag_delta, -diag_delta
+                else:
+                    dx, dy = 0, 0
+
+                elem['center_x'] = original_x + dx
+                elem['center_y'] = original_y + dy
+                new_bbox = calculate_bbox(elem, templates)
+                new_clashes = spatial_index.check_clash(new_bbox, elem['sub_group'], elem['ifc_class'])
+                if not new_clashes:
+                    return (True, {'x': original_x + dx, 'y': original_y + dy, 'z': original_z},
+                            f"offset_xy_{direction}_{delta:.1f}m")
+            elem['center_x'] = original_x  # Reset
+            elem['center_y'] = original_y
+
+        elif action['type'] == 'scale':
+            # For future: scale down the element geometry
+            # For now, skip this action type
+            pass
+
+    return (False, None, 'all_actions_failed')
+
+# ============================================================================
 # GEOMETRY LIBRARY LOADER
 # ============================================================================
 
@@ -120,11 +616,14 @@ def load_geometry_library():
     print(f"  Loaded {len(library)} fixture types from geometry library")
     return library
 
-def transform_library_geometry(lib_geom, cx, cy, cz, scale=1.0):
+def transform_library_geometry(lib_geom, cx, cy, cz, scale=1.0, hanging=False):
     """Transform library geometry to world position.
 
     Library geometries are centered at origin, need to offset to world position.
     Returns new vertices blob at world position.
+
+    Args:
+        hanging: If True, fixture hangs from ceiling (use max Z as reference)
     """
     import struct
 
@@ -140,7 +639,13 @@ def transform_library_geometry(lib_geom, cx, cy, cz, scale=1.0):
     zs = vertices[2::3]
     orig_cx = sum(xs) / len(xs)
     orig_cy = sum(ys) / len(ys)
-    orig_cz = min(zs)  # Use min Z as base
+
+    if hanging:
+        # For hanging fixtures (sprinklers, fans), use max Z as mounting point
+        orig_cz = max(zs)
+    else:
+        # For standing fixtures, use min Z as base
+        orig_cz = min(zs)
 
     # Transform: center at origin, scale, then move to world position
     new_vertices = []
@@ -964,12 +1469,12 @@ def main():
     # Create template geometries
     template_hashes = create_template_geometries(conn, templates)
 
-    # Define source files
+    # Define source files (using CLEAN DXFs with no slab fragments)
     dxf_sources = [
-        ('ARC', '1F', EXTRACTED_DIR / "Terminal1_ARC.dxf"),
-        ('STR', '1F', EXTRACTED_DIR / "Terminal1_STR_1F.dxf"),
-        ('STR', '3F', EXTRACTED_DIR / "Terminal1_STR_3F.dxf"),
-        ('STR', '4F-6F', EXTRACTED_DIR / "Terminal1_STR_4F-6F.dxf"),
+        ('ARC', '1F', EXTRACTED_DIR / "Terminal1_ARC_clean.dxf"),
+        ('STR', '1F', EXTRACTED_DIR / "Terminal1_STR_1F_clean.dxf"),
+        ('STR', '3F', EXTRACTED_DIR / "Terminal1_STR_3F_clean.dxf"),
+        ('STR', '4F-6F', EXTRACTED_DIR / "Terminal1_STR_4F-6F_clean.dxf"),
     ]
 
     # Get floor elevations
@@ -981,23 +1486,9 @@ def main():
     all_elements = []
     cursor = conn.cursor()
 
-    print("\nExtracting DXF entities...")
-    for discipline, floor, dxf_path in dxf_sources:
-        if not dxf_path.exists():
-            print(f"  SKIP: {dxf_path.name} not found")
-            continue
-
-        elements = extract_dxf_entities(dxf_path, discipline, floor, templates, layer_mapping)
-
-        # Set Z elevation based on floor
-        base_z = floor_elevations.get(floor, 0.0)
-        for elem in elements:
-            elem['center_z'] = base_z
-
-        all_elements.extend(elements)
-        print(f"  {dxf_path.name}: {len(elements)} elements")
-
-    print(f"\nTotal elements extracted from DXF: {len(all_elements)}")
+    # POC: Skip DXF extraction - floors are foundation
+    print("\nPOC: Skipping DXF extraction (using programmatic generation only)")
+    print("  Floors will be continuous and never fragmented")
 
     # ========================================================================
     # ADD DOME FROM BUILDING CONFIG
@@ -1041,6 +1532,7 @@ def main():
                                    if e['ifc_class'] in ['IfcWall', 'IfcColumn', 'IfcBeam']]
 
             if structural_elements:
+                # Use structural elements to calculate footprint
                 min_x = min(e['center_x'] for e in structural_elements)
                 max_x = max(e['center_x'] for e in structural_elements)
                 min_y = min(e['center_y'] for e in structural_elements)
@@ -1050,15 +1542,83 @@ def main():
                 slab_depth = max_y - min_y
                 slab_cx = (min_x + max_x) / 2
                 slab_cy = (min_y + max_y) / 2
+            else:
+                # POC: Use building_config footprint (no structural elements yet)
+                footprint = building_config.get('building_footprint', {})
+                slab_width = footprint.get('width_m', 45.0)
+                slab_depth = footprint.get('depth_m', 66.0)
+                slab_cx = footprint.get('center_x_m', 0.0)
+                slab_cy = footprint.get('center_y_m', 0.0)
 
-                floor_count = 0
-                for floor_id, floor_data in floors_config.items():
-                    if floor_id == 'ROOF':
-                        continue  # Skip roof level
+                # Calculate bounds for later use (entrance doors, MEP, etc.)
+                min_x = slab_cx - slab_width / 2
+                max_x = slab_cx + slab_width / 2
+                min_y = slab_cy - slab_depth / 2
+                max_y = slab_cy + slab_depth / 2
 
-                    elevation = floor_data.get('elevation_m', 0.0)
-                    thickness = floor_data.get('slab_thickness_m', 0.3)
+            # Get atrium configuration for floor voids
+            atrium_config = building_config.get('atrium', {})
+            atrium_enabled = atrium_config.get('enabled', False)
+            gallery_floors = atrium_config.get('gallery_floors', [])
+            atrium_width = atrium_config.get('width_m', 30.0)
+            atrium_depth = atrium_config.get('depth_m', 40.0)
+            atrium_cx = atrium_config.get('center_x_m', 0.0)
+            atrium_cy = atrium_config.get('center_y_m', 0.0)
+            gallery_width = atrium_config.get('gallery_width_m', 6.0)
 
+            floor_count = 0
+            for floor_id, floor_data in floors_config.items():
+                if floor_id == 'ROOF':
+                    continue  # Skip roof level
+
+                elevation = floor_data.get('elevation_m', 0.0)
+                thickness = floor_data.get('slab_thickness_m', 0.3)
+
+                # Check if this floor should have atrium void
+                has_void = atrium_enabled and floor_id in gallery_floors
+
+                if has_void:
+                    # Create 4 gallery slabs around the atrium void
+                    # North gallery
+                    gallery_slabs = [
+                        {'name': 'N', 'cx': slab_cx, 'cy': slab_cy + slab_depth/2 - gallery_width/2,
+                         'w': slab_width, 'd': gallery_width},
+                        # South gallery
+                        {'name': 'S', 'cx': slab_cx, 'cy': slab_cy - slab_depth/2 + gallery_width/2,
+                         'w': slab_width, 'd': gallery_width},
+                        # East gallery (between N and S)
+                        {'name': 'E', 'cx': slab_cx + slab_width/2 - gallery_width/2,
+                         'cy': slab_cy, 'w': gallery_width, 'd': slab_depth - 2*gallery_width},
+                        # West gallery (between N and S)
+                        {'name': 'W', 'cx': slab_cx - slab_width/2 + gallery_width/2,
+                         'cy': slab_cy, 'w': gallery_width, 'd': slab_depth - 2*gallery_width},
+                    ]
+
+                    for gallery in gallery_slabs:
+                        slab_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                        slab_element = {
+                            'guid': slab_guid,
+                            'discipline': 'STR',
+                            'ifc_class': 'IfcSlab',
+                            'floor': floor_id,
+                            'center_x': gallery['cx'],
+                            'center_y': gallery['cy'],
+                            'center_z': elevation,
+                            'rotation_z': 0,
+                            'length': gallery['w'],
+                            'layer': f'GALLERY_SLAB_{gallery["name"]}',
+                            'source_file': 'building_config.json',
+                            'polyline_points': None,
+                            'floor_slab_config': {
+                                'width': gallery['w'],
+                                'depth': gallery['d'],
+                                'thickness': thickness
+                            }
+                        }
+                        all_elements.append(slab_element)
+                    floor_count += 4
+                else:
+                    # Full floor slab
                     slab_guid = str(uuid.uuid4()).replace('-', '')[:22]
                     slab_element = {
                         'guid': slab_guid,
@@ -1069,7 +1629,7 @@ def main():
                         'center_y': slab_cy,
                         'center_z': elevation,
                         'rotation_z': 0,
-                        'length': slab_width,  # Will use as both width and depth
+                        'length': slab_width,
                         'layer': 'FLOOR_SLAB',
                         'source_file': 'building_config.json',
                         'polyline_points': None,
@@ -1082,7 +1642,85 @@ def main():
                     all_elements.append(slab_element)
                     floor_count += 1
 
-                print(f"  Generated {floor_count} floor slabs ({slab_width:.1f}m x {slab_depth:.1f}m)")
+            print(f"  Generated {floor_count} floor slabs ({slab_width:.1f}m x {slab_depth:.1f}m)")
+            print(f"  DEBUG: Total IfcSlab elements in all_elements after floor generation: {sum(1 for e in all_elements if e['ifc_class'] == 'IfcSlab')}")
+            if atrium_enabled:
+                print(f"  Atrium void: {atrium_width:.1f}m x {atrium_depth:.1f}m on floors {gallery_floors}")
+
+                # Generate ceiling fans in atrium (high up for impressive visuals)
+                if atrium_enabled:
+                    print("\nGenerating ceiling fans in atrium...")
+                    fan_count = 0
+                    ceiling_height = atrium_config.get('ceiling_elevation_m', 12.5)
+
+                    # Grid of fans across atrium void
+                    fan_spacing = 8.0  # meters between fans
+                    atrium_w = slab_width - 2*gallery_width
+                    atrium_d = slab_depth - 2*gallery_width
+
+                    nx = max(1, int(atrium_w / fan_spacing))
+                    ny = max(1, int(atrium_d / fan_spacing))
+
+                    for ix in range(nx):
+                        for iy in range(ny):
+                            fx = slab_cx - atrium_w/2 + (ix + 0.5) * atrium_w / nx
+                            fy = slab_cy - atrium_d/2 + (iy + 0.5) * atrium_d / ny
+
+                            fan_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                            fan_element = {
+                                'guid': fan_guid,
+                                'discipline': 'ELEC',
+                                'ifc_class': 'IfcElectricAppliance',
+                                'floor': '4F-6F',
+                                'center_x': fx,
+                                'center_y': fy,
+                                'center_z': ceiling_height - 0.5,  # Hang from ceiling
+                                'rotation_z': 0,
+                                'length': 1.2,  # Fan diameter
+                                'layer': 'CEILING_FAN',
+                                'source_file': 'building_config.json',
+                                'polyline_points': None
+                            }
+                            all_elements.append(fan_element)
+                            fan_count += 1
+
+                    print(f"  Generated {fan_count} ceiling fans at {ceiling_height:.1f}m height")
+
+                # Generate central seating area below atrium
+                if atrium_enabled:
+                    print("\nGenerating central seating area...")
+                    seat_count = 0
+
+                    # Bench rows in atrium center
+                    bench_rows = 4
+                    benches_per_row = 6
+                    row_spacing = 2.5
+                    bench_spacing = 3.0
+
+                    for row in range(bench_rows):
+                        for col in range(benches_per_row):
+                            bx = slab_cx - (benches_per_row - 1) * bench_spacing / 2 + col * bench_spacing
+                            by = slab_cy - (bench_rows - 1) * row_spacing / 2 + row * row_spacing
+
+                            bench_guid = str(uuid.uuid4()).replace('-', '')[:22]
+                            bench_element = {
+                                'guid': bench_guid,
+                                'discipline': 'ARC',
+                                'ifc_class': 'IfcFurniture',
+                                'floor': 'GF',
+                                'center_x': bx,
+                                'center_y': by,
+                                'center_z': 0.0,
+                                'rotation_z': 0,
+                                'length': 1.8,  # Bench length
+                                'layer': 'BENCH_SEATING',
+                                'source_file': 'building_config.json',
+                                'polyline_points': None
+                            }
+                            all_elements.append(bench_element)
+                            seat_count += 1
+
+                    print(f"  Generated {seat_count} bench seats in central atrium")
 
         # Generate perimeter walls (default enclosure) - use structural footprint
         if gen_options.get('generate_perimeter_walls', True) and structural_elements:
@@ -3957,26 +4595,111 @@ def main():
             print(f"  Generated {light_count} light fixtures + {conduit_count} conduit segments")
 
     print(f"\nTotal elements (with interior fit-out): {len(all_elements)}")
+    print(f"  DEBUG: IfcSlab count before MEP: {sum(1 for e in all_elements if e['ifc_class'] == 'IfcSlab')}")
+
+    # Assign sub-groups to all elements for phased processing
+    print("\nAssigning sub-groups for phased placement...")
+    for elem in all_elements:
+        elem['sub_group'] = get_sub_group(
+            elem['discipline'],
+            elem['ifc_class'],
+            elem.get('layer', '')
+        )
+
+    # Sort elements by sub-group order (construction sequencing)
+    all_elements.sort(key=lambda e: SUB_GROUPS.get(e['sub_group'], 99))
+
+    # Count by sub-group
+    sub_group_counts = {}
+    for elem in all_elements:
+        sg = elem['sub_group']
+        sub_group_counts[sg] = sub_group_counts.get(sg, 0) + 1
+
+    print("  Sub-group distribution:")
+    for sg in sorted(sub_group_counts.keys(), key=lambda s: SUB_GROUPS.get(s, 99)):
+        print(f"    {sg}: {sub_group_counts[sg]} elements")
+
+    # Initialize spatial index for clash detection
+    print("\nInitializing spatial clash detection...")
+    spatial_index = SpatialIndex(cell_size=2.0)
+
+    # Define exclusion zones (hard stops)
+    # These are areas where no elements should be placed
+    # Example: Fire escape routes, clearance zones
+
+    # Get building footprint for exclusion zone calculation
+    if structural_elements:
+        bldg_min_x = min(e['center_x'] for e in structural_elements)
+        bldg_max_x = max(e['center_x'] for e in structural_elements)
+        bldg_min_y = min(e['center_y'] for e in structural_elements)
+        bldg_max_y = max(e['center_y'] for e in structural_elements)
+        bldg_cx = (bldg_min_x + bldg_max_x) / 2
+        bldg_cy = (bldg_min_y + bldg_max_y) / 2
+
+        # Fire escape route - central corridor (1.5m wide clear path)
+        escape_route = BoundingBox(
+            bldg_cx - 0.75, bldg_min_y, 0,
+            bldg_cx + 0.75, bldg_max_y, 3.0
+        )
+        spatial_index.add_exclusion_zone(escape_route, "fire_escape_route")
+
+        # Entrance clearance zones (3m radius around each entrance)
+        for entrance_y in [bldg_min_y, bldg_max_y]:
+            entrance_zone = BoundingBox(
+                bldg_cx - 3.0, entrance_y - 1.5, 0,
+                bldg_cx + 3.0, entrance_y + 1.5, 3.0
+            )
+            spatial_index.add_exclusion_zone(entrance_zone, "entrance_clearance")
+
+        print(f"  Added {len(spatial_index.exclusion_zones)} exclusion zones")
+
+    clash_stats = {
+        'detected': 0,
+        'resolved': 0,
+        'unresolved': 0,
+        'resolutions': [],
+        'unresolved_list': []
+    }
 
     # Insert elements into database
-    print("\nPopulating database...")
+    print("\nPopulating database with clash awareness...")
 
     # Load geometry library for fixtures
     geometry_library = load_geometry_library()
 
     # Map IFC classes to library fixture types
+    # These are the primary mappings - layer-based mappings override for furniture
     ifc_to_fixture_map = {
         'IfcFireSuppressionTerminal': 'sprinkler_pendent',
         'IfcLightFixture': 'light_fixture',
         'IfcAlarm': 'smoke_detector',
         'IfcSanitaryTerminal': 'toilet',
         'IfcFlowTerminal': 'basin',
+        'IfcAirTerminal': 'light_fixture',  # Diffusers - use square fixture shape
+    }
+
+    # Layer-based overrides for IfcSanitaryTerminal to get more specific fixtures
+    sanitary_layer_map = {
+        'URINAL': 'urinal',
+        'BIDET': 'bidet',
+        'FLOOR_TRAP': 'floor_trap',
+        'GREASE_TRAP': 'grease_trap',
+    }
+
+    # Layer-based overrides for IfcAlarm to get more specific fire safety fixtures
+    alarm_layer_map = {
+        'HEAT': 'heat_detector',
+        'BREAK_GLASS': 'break_glass',
+        'BELL': 'alarm_bell',
+        'STROBE': 'alarm_light',
+        'INTERCOM': 'fireman_intercom',
     }
 
     # Map layer names to library fixture types (for IfcFurniture/IfcElectricAppliance)
     layer_to_fixture_map = {
+        # Direct matches
         'ATM': 'atm_kiosk',
-        'VENDING': 'atm_kiosk',  # Similar shape
+        'VENDING': 'atm_kiosk',
         'CHARGING': 'usb_charging_station',
         'SCALE': 'luggage_scale',
         'QUEUE_BARRIER': 'retractable_stanchion',
@@ -3984,14 +4707,199 @@ def main():
         'WEATHER_DISPLAY': 'weather_display',
         'EXCHANGE': 'currency_exchange_booth',
         'LIFEJACKET': 'life_jacket_cabinet',
-        'BIKERACK': 'atm_kiosk',  # Use kiosk shape
+        'BIKERACK': 'atm_kiosk',
         'INFO': 'info_kiosk',
+        'CEILING_FAN': 'ceiling_fan',
+        'BENCH_SEATING': 'bench_seating',
+        # Dynamic layer matches (substring matching)
+        'SEATING': 'bench_seating',
+        'KIOSK': 'info_kiosk',
+        'SHOPLOTS': 'info_kiosk',
+        'TICKET_COUNTER': 'info_kiosk',
+        'FOUNTAIN': 'atm_kiosk',
+        'WASTE': 'atm_kiosk',
+        'CANTEEN': 'bench_seating',
+        'CAROUSEL': 'info_kiosk',
+        'BOARDING': 'info_kiosk',
+        'IMMIGRATION': 'info_kiosk',
+        'WATER_TAXI': 'currency_exchange_booth',
+        'CART': 'atm_kiosk',
+        'PLANTER': 'atm_kiosk',
+        'SHELTER': 'info_kiosk',
+        'SMOKING': 'atm_kiosk',
+        'OPERATIONS': 'info_kiosk',
+        'LOST_FOUND': 'info_kiosk',
+        'PRAYER': 'info_kiosk',
+        'BABY_CARE': 'info_kiosk',
+        'FIRST_AID': 'info_kiosk',
+        # MEP electric appliances
+        'EXIT_SIGN': 'usb_charging_station',  # Small box
+        'EMERGENCY_LIGHT': 'usb_charging_station',  # Small box
+        'WAYFINDING': 'weather_display',  # Display panel
+        'EMERGENCY_CALL': 'usb_charging_station',  # Small box
+        'CCTV': 'usb_charging_station',  # Small device
+        'PA_SPEAKER': 'usb_charging_station',  # Small device
+        'SWITCH': 'usb_charging_station',  # Small device
+        'OUTLET': 'usb_charging_station',  # Small device
+        # Additional furniture mappings
+        'DISPLAY': 'weather_display',  # Info displays
+        'BOLLARD': 'retractable_stanchion',  # Traffic bollards
+        'PLANT': 'atm_kiosk',  # Rooftop mechanical
+        'STRUCT': 'atm_kiosk',  # Structural columns
+        'AUTO_DOOR': 'info_kiosk',  # Automatic doors
+        'TABLE': 'bench_seating',  # Tables
+        'COUNTER': 'info_kiosk',  # Counters (ticket, canteen)
+        'BAGGAGE': 'info_kiosk',  # Baggage carousel
+        'CANOPY': 'info_kiosk',  # Canopy structures
+        'MECH': 'atm_kiosk',  # Mechanical equipment
+        'ROOF': 'atm_kiosk',  # Roof equipment
+        'BENCH': 'bench_seating',  # Shelter benches
+        'COLUMN': 'retractable_stanchion',  # Shelter columns
     }
 
-    stats = {'by_class': {}, 'by_discipline': {}, 'library_used': 0, 'generated': 0}
+    stats = {
+        'by_class': {},
+        'by_discipline': {},
+        'library_used': 0,
+        'generated': 0,
+        'library_by_class': {},  # Track library usage by IFC class
+        'generated_by_class': {},  # Track generated usage by IFC class
+        'box_placeholders': {},  # Track 8-vertex boxes by IFC class
+    }
+
+    # Track placed/removed counts for post-process minimum enforcement
+    placed_counts = {}
+    removed_elements = []  # Track removed elements for potential recovery
+
+    # Calculate furniture minimum based on building area
+    floor_area = slab_width * slab_depth  # m²
+    furniture_per_100m2 = 1.0  # 1 furniture piece per 100m²
+    min_furniture = max(10, int(floor_area / 100 * furniture_per_100m2))
+
+    # Calculate sprinkler minimum based on building volume
+    # Fire safety standard: 2 sprinklers per 5m cube (5m x 5m x 5m = 125m³)
+    # This gives leeway for extra sprinklers in larger open areas
+    roof_base_z = 16.0  # Building height (defined earlier in code)
+    building_volume = floor_area * roof_base_z  # m³
+    cube_5m_volume = 5.0 * 5.0 * 5.0  # 125m³ per 5m cube
+    sprinklers_per_cube = 2.0
+    min_sprinklers = max(4, int(building_volume / cube_5m_volume * sprinklers_per_cube))
+
+    # Calculate actual floor slab count from all_elements
+    actual_slab_count = sum(1 for e in all_elements if e['ifc_class'] == 'IfcSlab')
+
+    MINIMUM_COUNTS = {
+        'IfcSlab': actual_slab_count,  # All slabs required (structural)
+        'IfcFurniture': min_furniture,  # Area-based: ~1 per 100m²
+        'IfcFireSuppressionTerminal': min_sprinklers,  # Volume-based: 2 per 5m cube (125m³)
+    }
+
+    print(f"\nMinimum count requirements:")
+    print(f"  Building: {slab_width:.1f}m x {slab_depth:.1f}m x {roof_base_z:.1f}m")
+    print(f"  Floor area: {floor_area:.1f}m² → {min_furniture} furniture minimum")
+    print(f"  Volume: {building_volume:.1f}m³ → {min_sprinklers} sprinklers minimum (2 per 5m cube)")
+    print(f"  Slabs: {actual_slab_count} required")
 
     for elem in all_elements:
         guid = elem['guid']
+
+        # HANGING FIXTURES: Snap to ceiling slab above BEFORE clash detection
+        ifc_class = elem['ifc_class']
+        hanging_classes = {'IfcFireSuppressionTerminal', 'IfcLightFixture', 'IfcAlarm'}
+        if ifc_class in hanging_classes:
+            # Query placed slabs to find ceiling above
+            cursor.execute("""
+                SELECT center_z FROM elements_meta em
+                JOIN element_transforms et ON em.guid = et.guid
+                WHERE ifc_class = 'IfcSlab' AND center_z > ?
+                ORDER BY center_z ASC
+                LIMIT 1
+            """, (elem['center_z'],))
+            ceiling_row = cursor.fetchone()
+
+            if ceiling_row:
+                ceiling_z = ceiling_row[0]
+                # Hang 0.3m below ceiling slab bottom
+                elem['center_z'] = ceiling_z - 0.3
+
+        # CLASH DETECTION: Check for clashes with already-placed elements
+        bbox = calculate_bbox(elem, templates)
+
+        # HARD STOP: Check exclusion zones first
+        in_exclusion, exclusion_reason = spatial_index.check_exclusion(bbox)
+        if in_exclusion:
+            clash_stats['unresolved'] += 1
+            clash_stats['unresolved_list'].append({
+                'guid': guid,
+                'ifc_class': elem['ifc_class'],
+                'sub_group': elem.get('sub_group', ''),
+                'clashed_with': [exclusion_reason],
+                'reason': 'hard_stop_exclusion_zone'
+            })
+            # Track removed element for potential recovery
+            elem_weight = get_element_weight(elem['ifc_class'], templates, elem)
+            removed_elements.append({
+                'elem': elem.copy(),
+                'weight': elem_weight,
+                'reason': 'exclusion_zone'
+            })
+            continue  # Skip this element entirely
+
+        clashes = spatial_index.check_clash(bbox, elem.get('sub_group', ''), elem['ifc_class'])
+
+        if clashes:
+            # All elements go through normal clash resolution with location-based weights
+            clash_stats['detected'] += 1
+            clash_ifc_classes = [c['ifc_class'] for c in clashes]
+
+            # FIRST: Always attempt to resolve clash through repositioning
+            # This gives furniture/loose elements a chance to find a valid position
+            resolved, new_pos, action = resolve_clash(elem, bbox, clashes, spatial_index, templates)
+
+            if resolved:
+                clash_stats['resolved'] += 1
+                clash_stats['resolutions'].append({
+                    'guid': guid,
+                    'ifc_class': elem['ifc_class'],
+                    'action': action,
+                    'clashed_with': clash_ifc_classes
+                })
+                # Recalculate bbox with new position
+                bbox = calculate_bbox(elem, templates)
+            else:
+                # Repositioning failed - now check if element should yield
+                # Only yield if dominated by higher-priority elements
+                if should_yield(elem['ifc_class'], clash_ifc_classes, templates):
+                    clash_stats['resolved'] += 1
+                    clash_stats['resolutions'].append({
+                        'guid': guid,
+                        'ifc_class': elem['ifc_class'],
+                        'action': 'yield_to_priority',
+                        'clashed_with': clash_ifc_classes
+                    })
+                    # Track removed element with weight for potential recovery
+                    elem_weight = get_element_weight(elem['ifc_class'], templates, elem)
+                    removed_elements.append({
+                        'elem': elem.copy(),
+                        'weight': elem_weight,
+                        'reason': 'yielded_to_priority'
+                    })
+                    continue  # Skip this soft element as last resort
+                else:
+                    # Element shouldn't yield - keep it but log unresolved clash
+                    # This ensures important elements aren't removed even if clashing
+                    clash_stats['unresolved'] += 1
+                    clash_stats['unresolved_list'].append({
+                        'guid': guid,
+                        'ifc_class': elem['ifc_class'],
+                        'sub_group': elem.get('sub_group', ''),
+                        'clashed_with': clash_ifc_classes,
+                        'reason': action
+                    })
+                    # Continue to add element despite clash
+
+        # Add element to spatial index for future clash checks
+        spatial_index.insert(guid, bbox, elem.get('sub_group', ''), elem['ifc_class'])
 
         # Get element dimensions from template
         template_key_lookup = elem['ifc_class']
@@ -4007,14 +4915,32 @@ def main():
 
         # Check if we can use library geometry for this element
         fixture_type = ifc_to_fixture_map.get(elem['ifc_class'])
+        layer = elem.get('layer', '').upper()
+
+        # Layer-based overrides for more specific fixtures
+        if elem['ifc_class'] == 'IfcSanitaryTerminal':
+            for key, ftype in sanitary_layer_map.items():
+                if key in layer:
+                    fixture_type = ftype
+                    break
+
+        if elem['ifc_class'] == 'IfcAlarm':
+            for key, ftype in alarm_layer_map.items():
+                if key in layer:
+                    fixture_type = ftype
+                    break
 
         # For furniture/appliances, check layer name for specific type
         if not fixture_type and elem['ifc_class'] in ['IfcFurniture', 'IfcElectricAppliance']:
-            layer = elem.get('layer', '').upper()
             for key, ftype in layer_to_fixture_map.items():
                 if key in layer:
                     fixture_type = ftype
                     break
+            # Fallback for unmapped furniture - use generic detailed model
+            if not fixture_type and elem['ifc_class'] == 'IfcFurniture':
+                fixture_type = 'info_kiosk'
+            elif not fixture_type and elem['ifc_class'] == 'IfcElectricAppliance':
+                fixture_type = 'usb_charging_station'
 
         use_library = fixture_type and fixture_type in geometry_library
 
@@ -4038,10 +4964,28 @@ def main():
                 'life_jacket_cabinet': 1.5,
                 'retractable_stanchion': 1.0,
                 'info_kiosk': 1.0,
+                'ceiling_fan': 1.5,  # Scale up for impressive size
+                'bench_seating': 1.0,  # Natural size
+                # Additional sanitary fixtures
+                'urinal': 0.7,
+                'bidet': 0.6,
+                'floor_trap': 0.3,
+                'grease_trap': 0.5,
+                # Fire safety fixtures
+                'heat_detector': 0.3,
+                'break_glass': 0.4,
+                'alarm_bell': 0.3,
+                'alarm_light': 0.3,
+                'fireman_intercom': 0.4,
             }
             scale = scale_map.get(fixture_type, 1.0)
 
-            v_blob = transform_library_geometry(lib_geom, cx, cy, cz, scale)
+            # Hanging fixtures mount from ceiling (use max Z as reference)
+            # Note: center_z already adjusted to ceiling in early loop pass
+            hanging_fixtures = ['sprinkler_pendent', 'ceiling_fan', 'light_fixture', 'smoke_detector']
+            hanging = fixture_type in hanging_fixtures
+
+            v_blob = transform_library_geometry(lib_geom, cx, cy, cz, scale, hanging)
             f_blob = lib_geom['faces']
             n_blob = lib_geom['normals']
             vertex_count = lib_geom['vertex_count']
@@ -4050,6 +4994,9 @@ def main():
             # Compute hash for this positioned geometry
             geom_hash = compute_hash(v_blob, f_blob)
             stats['library_used'] += 1
+            # Track by IFC class
+            ifc_class = elem['ifc_class']
+            stats['library_by_class'][ifc_class] = stats['library_by_class'].get(ifc_class, 0) + 1
         else:
             # Generate geometry using factory function (handles all element types)
             geom_result = generate_element_geometry(elem, templates)
@@ -4063,6 +5010,12 @@ def main():
             face_count = len(faces)
             geom_hash = compute_hash(v_blob, f_blob)
             stats['generated'] += 1
+            # Track by IFC class
+            ifc_class = elem['ifc_class']
+            stats['generated_by_class'][ifc_class] = stats['generated_by_class'].get(ifc_class, 0) + 1
+            # Detect box placeholders (8 vertices = simple cube)
+            if vertex_count == 8:
+                stats['box_placeholders'][ifc_class] = stats['box_placeholders'].get(ifc_class, 0) + 1
 
         # Store geometry (each element has unique world-positioned geometry)
         cursor.execute("""
@@ -4123,6 +5076,213 @@ def main():
         stats['by_class'][ifc_class] = stats['by_class'].get(ifc_class, 0) + 1
         stats['by_discipline'][discipline] = stats['by_discipline'].get(discipline, 0) + 1
 
+        # Track placed counts for minimum enforcement
+        placed_counts[ifc_class] = placed_counts.get(ifc_class, 0) + 1
+
+    # ========================================================================
+    # POST-PROCESS RECOVERY: Enforce minimum counts
+    # ========================================================================
+    print("\n" + "="*70)
+    print("POST-PROCESS RECOVERY")
+    print("="*70)
+    print("Checking if minimum counts are met...")
+
+    recovery_stats = {'attempted': 0, 'recovered': 0, 'failed': 0}
+
+    for ifc_class, min_required in MINIMUM_COUNTS.items():
+        placed_count = placed_counts.get(ifc_class, 0)
+        shortfall = min_required - placed_count
+
+        if shortfall > 0:
+            print(f"\n  {ifc_class}: {placed_count}/{min_required} placed (need {shortfall} more)")
+
+            # Get removed elements of this class, sorted by weight (lowest = highest priority)
+            removed_of_class = [
+                r for r in removed_elements
+                if r['elem']['ifc_class'] == ifc_class
+            ]
+            removed_of_class.sort(key=lambda r: r['weight'])  # Lower weight = higher priority
+
+            # Try to recover highest-priority removed elements
+            for removed_item in removed_of_class[:shortfall * 2]:  # Try 2x shortfall to account for failures
+                if recovery_stats['recovered'] >= shortfall:
+                    break  # Met minimum
+
+                recovery_stats['attempted'] += 1
+                elem = removed_item['elem']
+                guid = elem['guid']
+
+                # Check if element can be placed without clashes
+                bbox = calculate_bbox(elem, templates)
+                clashes = spatial_index.check_clash(bbox, elem.get('sub_group', ''), elem['ifc_class'])
+                in_exclusion, _ = spatial_index.check_exclusion(bbox)
+
+                # Only recover if no clashes
+                if not clashes and not in_exclusion:
+                    # Insert recovered element into database
+                    ifc_class_r = elem['ifc_class']
+                    discipline_r = elem['discipline']
+                    template_key_lookup = ifc_class_r
+
+                    if discipline_r == 'ARC':
+                        params = templates.get('arc_elements', {}).get(template_key_lookup, {}).get('parameters', {})
+                        material_info = templates.get('arc_elements', {}).get(template_key_lookup, {}).get('material', {})
+                    else:
+                        params = templates.get('str_elements', {}).get(template_key_lookup, {}).get('parameters', {})
+                        material_info = templates.get('str_elements', {}).get(template_key_lookup, {}).get('material', {})
+
+                    material_name = material_info.get('name', 'Default')
+                    material_rgba = json.dumps(material_info.get('rgba', [0.7, 0.7, 0.7, 1.0]))
+
+                    # Check library geometry (same logic as original placement)
+                    fixture_type = ifc_to_fixture_map.get(ifc_class_r)
+                    layer = elem.get('layer', '').upper()
+
+                    # Try library first
+                    library_key = None
+                    if fixture_type:
+                        cursor.execute("SELECT geometry_key FROM geometry_catalog WHERE fixture_type = ?", (fixture_type,))
+                        row = cursor.fetchone()
+                        if row:
+                            library_key = row[0]
+
+                    # Generate geometry if no library match
+                    if library_key:
+                        geom_key = library_key
+                    else:
+                        geom_result = generate_element_geometry(elem, params, templates)
+                        geom_key = geom_result.geometry_key
+                        if geom_result.geometry_blob:
+                            cursor.execute(
+                                "INSERT OR IGNORE INTO element_geometry (geometry_key, vertices_blob, faces_blob, num_vertices, num_faces) VALUES (?, ?, ?, ?, ?)",
+                                (geom_key, geom_result.vertices_blob, geom_result.faces_blob, geom_result.num_vertices, geom_result.num_faces)
+                            )
+
+                    # Insert element metadata and transform
+                    cursor.execute(
+                        "INSERT INTO elements_meta (guid, ifc_class, discipline, layer, geometry_key, material_name, material_rgba, sub_group) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (guid, ifc_class_r, discipline_r, elem.get('layer', ''), geom_key, material_name, material_rgba, elem.get('sub_group', ''))
+                    )
+                    cursor.execute(
+                        "INSERT INTO element_transforms (guid, center_x, center_y, center_z, quat_w, quat_x, quat_y, quat_z) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (guid, elem['center_x'], elem['center_y'], elem['center_z'], 1.0, 0.0, 0.0, 0.0)
+                    )
+                    cursor.execute(
+                        "INSERT INTO element_instances (guid, geometry_key, ifc_class) VALUES (?, ?, ?)",
+                        (guid, geom_key, ifc_class_r)
+                    )
+
+                    # Add to spatial index
+                    spatial_index.insert(guid, bbox, elem.get('sub_group', ''), ifc_class_r)
+
+                    recovery_stats['recovered'] += 1
+                    placed_counts[ifc_class_r] = placed_counts.get(ifc_class_r, 0) + 1
+                    print(f"    ✓ Recovered {ifc_class_r} (weight {removed_item['weight']}, reason: {removed_item['reason']})")
+                else:
+                    recovery_stats['failed'] += 1
+
+            final_count = placed_counts.get(ifc_class, 0)
+            if final_count >= min_required:
+                print(f"  ✓ Minimum met: {final_count}/{min_required}")
+            else:
+                print(f"  ⚠ Still short: {final_count}/{min_required} (could not recover {min_required - final_count} elements)")
+
+    print(f"\nRecovery summary:")
+    print(f"  Attempted: {recovery_stats['attempted']}")
+    print(f"  Recovered: {recovery_stats['recovered']}")
+    print(f"  Failed (clashes): {recovery_stats['failed']}")
+
+    # ========================================================================
+    # FINAL BBOX NON-CLASH VERIFICATION
+    # ========================================================================
+    print("\n" + "="*70)
+    print("FINAL BBOX VERIFICATION")
+    print("="*70)
+    print("Checking all placed elements for remaining bbox overlaps...")
+
+    # Query all placed elements
+    cursor.execute("""
+        SELECT em.guid, em.ifc_class, em.discipline,
+               et.center_x, et.center_y, et.center_z
+        FROM elements_meta em
+        JOIN element_transforms et ON em.guid = et.guid
+    """)
+    placed_elements = cursor.fetchall()
+
+    # Rebuild spatial index from placed elements
+    final_spatial_index = SpatialIndex(cell_size=2.0)
+    elements_by_guid = {}
+
+    for guid, ifc_class, discipline, cx, cy, cz in placed_elements:
+        elem = {
+            'guid': guid,
+            'ifc_class': ifc_class,
+            'discipline': discipline,
+            'center_x': cx,
+            'center_y': cy,
+            'center_z': cz,
+            'length': 1.0  # Default for bbox calc
+        }
+        bbox = calculate_bbox(elem, templates)
+        elements_by_guid[guid] = (elem, bbox)
+        final_spatial_index.insert(guid, bbox, '', ifc_class)
+
+    # Check for final clashes
+    violations = []
+    for guid, (elem, bbox) in elements_by_guid.items():
+        clashes = final_spatial_index.check_clash(bbox, '', elem['ifc_class'])
+        if clashes:
+            clash_ifc_classes = [c['ifc_class'] for c in clashes]
+            # Filter out acceptable pairs
+            real_clashes = []
+            for clash_info in clashes:
+                clash_guid = clash_info['guid']
+                if clash_guid == guid:
+                    continue  # Don't clash with self
+                clash_elem = elements_by_guid[clash_guid][0]
+                # Check ACCEPTABLE_PAIRS
+                pair = (elem['ifc_class'], clash_elem['ifc_class'])
+                acceptable = pair in {
+                    ('IfcFurniture', 'IfcSlab'), ('IfcSlab', 'IfcFurniture'),
+                    ('IfcElectricAppliance', 'IfcSlab'), ('IfcSlab', 'IfcElectricAppliance'),
+                    ('IfcFurniture', 'IfcWall'), ('IfcWall', 'IfcFurniture'),
+                    ('IfcFireSuppressionTerminal', 'IfcSlab'), ('IfcSlab', 'IfcFireSuppressionTerminal'),
+                    ('IfcLightFixture', 'IfcSlab'), ('IfcSlab', 'IfcLightFixture'),
+                }
+                if not acceptable:
+                    real_clashes.append(clash_guid)
+
+            if real_clashes:
+                violations.append((guid, elem['ifc_class'], real_clashes))
+
+    print(f"  Found {len(violations)} elements with unacceptable bbox overlaps")
+
+    # Remove violating elements (keep higher priority)
+    removed_guids = set()
+    for guid, ifc_class, clash_guids in violations:
+        elem_weight = get_element_weight(ifc_class, templates)
+        # Check if all clashing elements have higher priority
+        should_remove = True
+        for clash_guid in clash_guids:
+            if clash_guid in removed_guids:
+                continue  # Already removed
+            clash_elem = elements_by_guid[clash_guid][0]
+            clash_weight = get_element_weight(clash_elem['ifc_class'], templates)
+            if elem_weight <= clash_weight:
+                should_remove = False
+                break
+
+        if should_remove and guid not in removed_guids:
+            # Remove this element
+            cursor.execute("DELETE FROM element_instances WHERE guid = ?", (guid,))
+            cursor.execute("DELETE FROM element_transforms WHERE guid = ?", (guid,))
+            cursor.execute("DELETE FROM elements_meta WHERE guid = ?", (guid,))
+            removed_guids.add(guid)
+            stats['by_class'][ifc_class] -= 1
+
+    print(f"  Removed {len(removed_guids)} elements to enforce non-clash policy")
+    print("="*70)
+
     # Insert extraction metadata
     cursor.execute("""
         INSERT INTO extraction_metadata
@@ -4152,6 +5312,27 @@ def main():
     print(f"Library geometries used: {stats['library_used']}")
     print(f"Generated geometries: {stats['generated']}")
 
+    # Clash detection report
+    print("\nClash Detection Report:")
+    print(f"  Clashes detected: {clash_stats['detected']}")
+    print(f"  Clashes resolved: {clash_stats['resolved']}")
+    print(f"  Clashes unresolved: {clash_stats['unresolved']}")
+
+    if clash_stats['resolutions']:
+        print("\n  Resolution actions taken:")
+        action_counts = {}
+        for res in clash_stats['resolutions']:
+            action = res['action'].split('_')[0:2]
+            action_key = '_'.join(action)
+            action_counts[action_key] = action_counts.get(action_key, 0) + 1
+        for action, count in sorted(action_counts.items(), key=lambda x: -x[1]):
+            print(f"    {action}: {count}")
+
+    if clash_stats['unresolved_list'] and len(clash_stats['unresolved_list']) <= 20:
+        print("\n  Unresolved clashes (need manual review):")
+        for clash in clash_stats['unresolved_list'][:10]:
+            print(f"    {clash['ifc_class']} ({clash['sub_group']}) vs {clash['clashed_with']}")
+
     print("\nBy Discipline:")
     for disc, count in sorted(stats['by_discipline'].items()):
         print(f"  {disc}: {count}")
@@ -4159,6 +5340,31 @@ def main():
     print("\nBy IFC Class:")
     for ifc_class, count in sorted(stats['by_class'].items(), key=lambda x: -x[1]):
         print(f"  {ifc_class}: {count}")
+
+    # Box placeholder audit
+    if stats['box_placeholders']:
+        total_boxes = sum(stats['box_placeholders'].values())
+        print(f"\nBox Placeholder Audit ({total_boxes} total):")
+        # Expected boxes (structural elements that should be boxes)
+        expected_boxes = {'IfcWall', 'IfcSlab', 'IfcBeam', 'IfcColumn', 'IfcPlate',
+                        'IfcCurtainWall', 'IfcSpace', 'IfcRoof', 'IfcDoor', 'IfcWindow',
+                        'IfcStairFlight', 'IfcRamp', 'IfcCableCarrierSegment',
+                        'IfcPipeSegment', 'IfcDuctSegment', 'IfcTransportElement'}
+        unexpected = []
+        for ifc_class, count in sorted(stats['box_placeholders'].items(), key=lambda x: -x[1]):
+            status = "OK" if ifc_class in expected_boxes else "NEEDS MESH"
+            print(f"  {ifc_class}: {count} [{status}]")
+            if ifc_class not in expected_boxes:
+                unexpected.append((ifc_class, count))
+
+        if unexpected:
+            print(f"\n  WARNING: {len(unexpected)} IFC classes using box placeholders need library meshes:")
+            for ifc_class, count in unexpected:
+                print(f"    - {ifc_class}: {count} elements")
+        else:
+            print("\n  All box geometries are appropriate structural elements.")
+    else:
+        print("\nBox Placeholder Audit: No box placeholders detected!")
 
     print("\n" + "="*70)
     print("Next: Load in Bonsai BBox Preview or run blend bake")
